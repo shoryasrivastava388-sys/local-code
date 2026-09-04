@@ -90,17 +90,22 @@ The tools are:
   args: `{"path": "optional_path"}`
 
 ## Core Operational Directives
-1. FILE EDITING vs CREATION:
+1. ALWAYS SAVE CODE TO FILES (NEVER DUMP CODE IN CHAT):
+   - You are an autonomous software engineering CLI tool running directly on the user's disk, NOT a web chatbot.
+   - NEVER output full code or scripts into the chat with ```python, ```javascript, ```html, etc.!
+   - Whenever the user asks to write, implement, create, produce, or build a script, tool, CLI, or application (even if they say "act as a programmer" or "produce the complete python code"), you MUST execute `write_file` to save the code directly to a file on disk.
+   - If the user did not specify an exact filename, choose an appropriate standard filename (e.g. `rate_limiter.py`, `app.py`, `main.py`, `index.html`) and invoke `write_file`.
+2. FILE EDITING vs CREATION:
    - When modifying an existing file, NEVER rewrite or recreate the file with `write_file`.
    - ALWAYS read the file with `read_file` first, then use `edit_file` to replace only the targeted snippet.
    - Use `write_file` ONLY when creating brand new files that do not exist on disk.
-2. WEB RESEARCH & IMPLEMENTATION:
+3. WEB RESEARCH & IMPLEMENTATION:
    - When asked to search, research, or implement external libraries/APIs, use `search_web` to discover solutions, `fetch_web` to inspect details, and then apply the code directly.
-3. NATIVE ACCESS & CAPABILITIES:
+4. NATIVE ACCESS & CAPABILITIES:
    - NEVER claim "I am just a language model", "I cannot access the web", or "I cannot do anything outside this text box". You have full system and web access.
-4. NO CODE LECTURES:
-   - Do NOT lecture the user on basic code syntax or dump long code files into the chat. Apply the changes to the files, verify them, and report concise outcomes.
-5. SELF-HEALING:
+5. NO CODE LECTURES:
+   - Do NOT lecture the user on basic code syntax. Apply the changes to the files, run tests or verification commands, and report concise outcomes.
+6. SELF-HEALING:
    - If tests fail, builds break, or commands error, inspect the error trace, patch the code, and re-run tests until passing.
 """
 
@@ -353,7 +358,7 @@ def print_diff(old_text, new_text, filename):
 
 
 class Agent:
-    def __init__(self, model="qwen2.5-coder:7b", host="http://127.0.0.1:11434", context=4096, temp=0.2, auto=False):
+    def __init__(self, model="qwen2.5-coder:7b", host="http://127.0.0.1:11434", context=2048, temp=0.2, auto=False):
         self.model = model
         self.host = host.rstrip("/")
         self.context = context
@@ -596,8 +601,10 @@ class Agent:
 
         return f"Unknown tool: '{name}'."
 
-    def extract_tool_call(self, text):
-        """Extract tool call using markdown blocks, balanced-brace parsing, and raw JSON fallback."""
+    def extract_tool_call(self, text, user_prompt=""):
+        """Extract tool call using markdown blocks, balanced-brace parsing, and raw JSON fallback.
+        Also provides an agentic fallback: if the model produced a code block instead of JSON,
+        automatically converts it into a write_file tool call so code is saved to disk."""
         # 1. Try finding markdown code block with json
         blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
         for b in blocks:
@@ -652,6 +659,50 @@ class Agent:
             except Exception:
                 pass
 
+        # 4. Agentic Fallback: Model produced a raw code block (```python, ```js, etc.) instead of JSON!
+        # Automatically convert it into a write_file action so code is saved to disk immediately.
+        code_blocks = re.findall(r"```([a-zA-Z0-9_-]+)?\s*\n(.*?)```", text, flags=re.DOTALL)
+        for lang, code in code_blocks:
+            code = code.strip()
+            if code.count("\n") >= 4 and not (code.startswith("{") and code.endswith("}")):
+                ext_map = {
+                    "python": ".py", "py": ".py",
+                    "javascript": ".js", "js": ".js",
+                    "typescript": ".ts", "ts": ".ts",
+                    "html": ".html", "htm": ".html",
+                    "css": ".css",
+                    "bash": ".sh", "sh": ".sh",
+                    "json": ".json",
+                    "rust": ".rs", "rs": ".rs",
+                    "go": ".go", "cpp": ".cpp", "c": ".c"
+                }
+                ext = ext_map.get((lang or "").lower(), ".py" if "python" in user_prompt.lower() else ".txt")
+
+                filename = None
+                # Check for explicit filename in prompt (e.g. rate_limiter.py)
+                fn_match = re.search(r"(\b[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c)\b)", user_prompt, re.IGNORECASE)
+                if fn_match:
+                    filename = fn_match.group(1)
+                else:
+                    first_line = code.splitlines()[0].strip() if code else ""
+                    first_match = re.search(r"[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c)", first_line, re.IGNORECASE)
+                    if first_match:
+                        filename = first_match.group(0)
+                    else:
+                        # Check for capitalized topic phrases like "Rate Limiter", "Chess Game"
+                        cap_phrases = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b", user_prompt)
+                        for phrase in cap_phrases:
+                            if not any(w in phrase.lower() for w in ("act as", "follow these", "strict specifications", "senior systems")):
+                                filename = phrase.lower().replace(" ", "_") + ext
+                                break
+                        if not filename:
+                            stopwords = {"write", "a", "single", "file", "production", "ready", "cli", "tool", "that", "implements", "an", "the", "in", "and", "or", "to", "act", "as", "senior", "systems", "programmer", "follow", "these", "strict", "specifications", "create", "make", "build", "using", "module", "code", "runnable", "complete", "python"}
+                            words = [w.lower() for w in re.findall(r"[a-zA-Z0-9]+", user_prompt) if w.lower() not in stopwords]
+                            base = "_".join(words[:2]) if words else "script"
+                            filename = f"{base}{ext}"
+
+                return "write_file", {"path": filename, "content": code}, True
+
         return None, None, False
 
     def stream_turn(self, step=1):
@@ -691,7 +742,7 @@ class Agent:
                     accumulated += token
                     token_count += 1
 
-                    if "```json" in accumulated or '{"name"' in accumulated or '{"name":' in accumulated:
+                    if "```json" in accumulated or '{"name"' in accumulated or '{"name":' in accumulated or (accumulated.strip().startswith("```") and "\n" in accumulated):
                         in_tool_block = True
 
                     if in_tool_block:
@@ -717,6 +768,8 @@ class Agent:
             return ""
 
     def run(self, user_prompt, max_steps=20):
+        # Sanitize pasted escape sequences from terminals (e.g. ^[E or \x1b[E)
+        user_prompt = re.sub(r'(\x1b\[E|\^[E])', '\n', user_prompt)
         self.history.append({"role": "user", "content": user_prompt})
         step = 1
 
@@ -727,7 +780,7 @@ class Agent:
                 break
 
             self.history.append({"role": "assistant", "content": res})
-            name, args, is_tool = self.extract_tool_call(res)
+            name, args, is_tool = self.extract_tool_call(res, user_prompt=user_prompt)
 
             if not is_tool:
                 break
@@ -770,7 +823,7 @@ def main():
     parser.add_argument("prompt", nargs="*", help="Direct prompt to execute (non-interactive mode)")
     parser.add_argument("-m", "--model", default=default_model, help="Ollama model name (default: %(default)s)")
     parser.add_argument("-y", "--yes", action="store_true", help="Auto-approve all actions (Auto Mode)")
-    parser.add_argument("-c", "--context", type=int, default=4096, help="Context window size in tokens")
+    parser.add_argument("-c", "--context", type=int, default=2048, help="Context window size in tokens (default: 2048)")
     parser.add_argument("-t", "--temp", type=float, default=0.2, help="Sampling temperature")
     parser.add_argument("--host", default=default_host, help="Ollama API base URL")
     parser.add_argument("-v", "--version", action="version", version=f"local-code (lc) {__version__} ({OS_NAME})")
@@ -798,6 +851,7 @@ def main():
             cwd_name = Path.cwd().name
             prompt_symbol = f"{BOLD}{GREEN}[{cwd_name}] >{RESET} "
             user_input = input(prompt_symbol).strip()
+            user_input = re.sub(r'(\x1b\[E|\^[E])', '\n', user_input).strip()
         except (KeyboardInterrupt, EOFError):
             print(f"\n{GRAY}Goodbye!{RESET}")
             break
