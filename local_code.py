@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.4.2"
+__version__ = "1.4.3"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -719,6 +719,38 @@ class Agent:
             except Exception:
                 pass
 
+        # 3.5 Fallback: Robust regex extraction for write_file if JSON was malformed or truncated
+        if '"name"' in text or '{"name":' in text or '"write_file"' in text:
+            name_m = re.search(r'"name"\s*:\s*"([a-zA-Z0-9_-]+)"', text)
+            tool_name = name_m.group(1) if name_m else ("write_file" if '"write_file"' in text else None)
+            if tool_name == "write_file":
+                path_m = re.search(r'"path"\s*:\s*"([^"]+)"', text)
+                content_m = re.search(r'"content"\s*:\s*"(.*)', text, flags=re.DOTALL)
+                if not content_m:
+                    content_m = re.search(r'"content"\s*:\s*(.*)', text, flags=re.DOTALL)
+
+                if path_m and content_m:
+                    p_str = path_m.group(1).strip()
+                    c_str = content_m.group(1).strip()
+                    c_str = re.sub(r'(?:"\s*\}|\s*\}\s*\}|\s*```)\s*$', '', c_str)
+                    c_str = re.sub(r'"\s*\}\s*\}\s*$', '', c_str)
+                    try:
+                        c_str = c_str.encode("utf-8").decode("unicode_escape")
+                    except Exception:
+                        c_str = c_str.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+
+                    # Trim repetitive tail if model was caught in a looping pattern
+                    for pat_len in range(10, 80):
+                        if len(c_str) >= pat_len * 3:
+                            pat = c_str[-pat_len:]
+                            if c_str.endswith(pat * 3):
+                                while c_str.endswith(pat):
+                                    c_str = c_str[:-len(pat)]
+                                break
+
+                    if c_str.strip():
+                        return "write_file", {"path": p_str, "content": c_str.strip()}, True
+
         # 4. Agentic Fallback: Model produced a raw code block on Step 1 instead of JSON!
         # Automatically convert it into a write_file action so code is saved to disk immediately.
         if step == 1:
@@ -784,6 +816,8 @@ class Agent:
                 "num_ctx": self.context,
                 "num_predict": min(self.context, 2048),
                 "temperature": self.temp,
+                "repeat_penalty": 1.15,
+                "repeat_last_n": 64,
                 "num_thread": num_threads,
                 "stop": ["<|im_end|>", "<|endoftext|>"]
             }
@@ -836,12 +870,33 @@ class Agent:
                     accumulated += token
                     token_count += 1
 
-                    if "```json" in accumulated or '{"name"' in accumulated or '{"name":' in accumulated or (accumulated.strip().startswith("```") and "\n" in accumulated):
+                    if (
+                        accumulated.strip().startswith("```")
+                        or accumulated.strip().startswith("{")
+                        or "```json" in accumulated
+                        or '{"name"' in accumulated
+                        or '{"name":' in accumulated
+                    ):
                         in_tool_block = True
 
                     if in_tool_block:
                         sys.stdout.write(f"\r{CYAN}⚡ [Step {step}] Generating action... ({token_count} tokens){RESET}\033[K")
                         sys.stdout.flush()
+
+                        # Repetition loop detector: if a phrase repeats 3+ times in the tail, break immediately
+                        if len(accumulated) > 150:
+                            tail = accumulated[-350:]
+                            is_looping = False
+                            for pat_len in range(12, 75):
+                                if len(tail) >= pat_len * 3:
+                                    pat = tail[-pat_len:]
+                                    if tail.endswith(pat * 3):
+                                        while accumulated.endswith(pat):
+                                            accumulated = accumulated[:-len(pat)]
+                                        is_looping = True
+                                        break
+                            if is_looping:
+                                break
 
                         # Early stop: break immediately as soon as a complete tool call or code block is formed
                         if re.search(r"```[a-zA-Z0-9_-]*\s*\n.+?\n```", accumulated, flags=re.DOTALL):
@@ -889,7 +944,8 @@ class Agent:
 
             if not is_tool:
                 if not any(marker in res for marker in ("Qwen:",)) and res.strip():
-                    print(f"\n{BOLD}{CYAN}Qwen:{RESET} {res.strip()}")
+                    if not re.search(r'^\s*(?:```|\{\s*"name")', res):
+                        print(f"\n{BOLD}{CYAN}Qwen:{RESET} {res.strip()}")
                 break
 
             print(" " * 30, end="\r")
