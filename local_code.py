@@ -790,7 +790,7 @@ class Agent:
             result = self.execute_tool(name, args)
             self.history.append({
                 "role": "user",
-                "content": f"[Result of {name}]:\n{result}\nProceed directly to next action or concise final outcome summary."
+                "content": f"[Result of {name}]:\n{result}\nIf the requested task is complete, provide your concise final response directly without calling any tools. Otherwise, proceed to the next necessary tool action."
             })
             step += 1
 
