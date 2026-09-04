@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
 """
-qwen-agent (qc) - Autonomous Local AI Engineer powered by Ollama.
+qwen-agent (qc) - Cross-Platform Autonomous Local AI Engineer powered by Ollama.
+Works seamlessly on Linux, macOS, and Windows.
 Engineered for Qwen2.5-Coder (with support for any local LLM).
-Features:
-- Search the web (DuckDuckGo Lite) and fetch documentation
-- Surgical file editing with colored diffs (no recreating existing files)
-- Terminal execution with Permission Mode & Auto Mode
-- Desktop browser launcher
-- In-chat slash commands (/diff, /undo, /search, /model, /auto)
-- Self-healing autonomous task execution
 """
 
 import argparse
@@ -17,6 +11,7 @@ import fnmatch
 import html
 import json
 import os
+import platform
 import re
 import signal
 import subprocess
@@ -24,9 +19,23 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import webbrowser
 from pathlib import Path
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
+
+# Operating System Detection
+OS_NAME = platform.system()
+IS_WINDOWS = OS_NAME.lower() == "windows"
+IS_MACOS = OS_NAME.lower() == "darwin"
+IS_LINUX = OS_NAME.lower() == "linux"
+
+# Enable ANSI escape codes in Windows Command Prompt and PowerShell
+if IS_WINDOWS:
+    try:
+        os.system("")
+    except Exception:
+        pass
 
 # ANSI Terminal Colors & Styling
 RESET = "\033[0m"
@@ -40,7 +49,8 @@ MAGENTA = "\033[35m"
 RED = "\033[31m"
 GRAY = "\033[90m"
 
-SYSTEM_PROMPT = """You are an elite, autonomous software engineering agent operating directly on the local machine.
+SYSTEM_PROMPT_TEMPLATE = """You are an elite, autonomous software engineering agent operating directly on the local machine.
+Host OS: {os_name}
 You have native access to system tools for searching the web, browsing documentation, reading code, editing files, and running terminal commands.
 
 ## Available Tools
@@ -54,7 +64,7 @@ The tools are:
   args: `{"query": "search keywords"}`
 - `fetch_web`: Fetch and extract clean text from any URL or GitHub repository.
   args: `{"url": "https://..."}`
-- `open_browser`: Open a URL in the desktop web browser (Firefox/Chrome).
+- `open_browser`: Open a URL in the desktop web browser.
   args: `{"url": "https://..."}`
 - `read_file`: Read file contents with line numbers.
   args: `{"path": "filepath", "start_line": optional_int, "line_count": optional_int}`
@@ -62,11 +72,11 @@ The tools are:
   args: `{"path": "filepath", "target": "exact_old_code", "replacement": "new_code"}`
 - `write_file`: Create a BRAND NEW file (only use for new files that don't exist yet).
   args: `{"path": "filepath", "content": "file text"}`
-- `run_command`: Run any bash command in the terminal.
+- `run_command`: Run a shell/terminal command (adapted for {os_name}).
   args: `{"command": "command string", "cwd": "optional_dir"}`
 - `list_dir`: List files and subdirectories.
   args: `{"path": "optional_dir", "max_depth": optional_int}`
-- `search_code`: Search code for keywords or regex (`ripgrep`/`grep`).
+- `search_code`: Search code for keywords or regex.
   args: `{"query": "string", "path": "optional_path"}`
 - `git_diff`: View git status and current uncommitted diffs.
   args: `{"path": "optional_path"}`
@@ -87,29 +97,75 @@ The tools are:
 """
 
 
+def get_system_prompt():
+    return SYSTEM_PROMPT_TEMPLATE.format(os_name=OS_NAME)
+
+
 def search_duckduckgo(query, max_results=5):
-    """Searches DuckDuckGo Lite without API keys and returns structured results."""
+    """Searches DuckDuckGo Lite without API keys and returns structured results (Cross-Platform)."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    data = f"q={urllib.parse.quote(query)}".encode("utf-8")
+    
+    html_text = ""
+    # Try Python urllib first (universal on Windows/Mac/Linux)
+    try:
+        req = urllib.request.Request("https://lite.duckduckgo.com/lite/", data=data, headers=headers)
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            html_text = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        # Fallback to curl if available
+        try:
+            res = subprocess.run(
+                ["curl", "-sL", "-A", headers["User-Agent"], "--max-time", "12", "https://lite.duckduckgo.com/lite/", "--data", f"q={urllib.parse.quote(query)}"],
+                capture_output=True, text=True
+            )
+            if res.returncode == 0 and res.stdout:
+                html_text = res.stdout
+        except Exception:
+            pass
+
+    if not html_text:
+        return f"Error connecting to web search for '{query}'."
+
+    links = re.findall(r'<a rel="nofollow" href="([^"]+)" class=[\'"]result-link[\'"]>(.*?)</a>', html_text, re.DOTALL)
+    snippets = re.findall(r'<td class=[\'"]result-snippet[\'"]>(.*?)</td>', html_text, re.DOTALL)
+    
+    out = []
+    for (url, title), snip in zip(links[:max_results], snippets[:max_results]):
+        t = html.unescape(re.sub(r'<[^>]+>', '', title).strip())
+        s = html.unescape(re.sub(r'<[^>]+>', '', snip).strip())
+        out.append(f"[{len(out)+1}] {t}\n    URL: {url}\n    {s}")
+    return "\n\n".join(out) if out else f"No web search results found for '{query}'."
+
+
+def fetch_url_content(url):
+    """Fetches clean text from any URL (Cross-Platform)."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    html_text = ""
+    
+    # Try curl first for robust HTTP/2 and TLS on complex sites
     try:
         res = subprocess.run(
-            [
-                "curl", "-sL", "-A", "Mozilla/5.0 (X11; Linux x86_64)",
-                "--max-time", "12",
-                "https://lite.duckduckgo.com/lite/",
-                "--data", f"q={urllib.parse.quote(query)}"
-            ],
+            ["curl", "-sL", "-A", headers["User-Agent"], "--max-time", "15", url],
             capture_output=True, text=True
         )
-        links = re.findall(r'<a rel="nofollow" href="([^"]+)" class=[\'"]result-link[\'"]>(.*?)</a>', res.stdout, re.DOTALL)
-        snippets = re.findall(r'<td class=[\'"]result-snippet[\'"]>(.*?)</td>', res.stdout, re.DOTALL)
-        
-        out = []
-        for (url, title), snip in zip(links[:max_results], snippets[:max_results]):
-            t = html.unescape(re.sub(r'<[^>]+>', '', title).strip())
-            s = html.unescape(re.sub(r'<[^>]+>', '', snip).strip())
-            out.append(f"[{len(out)+1}] {t}\n    URL: {url}\n    {s}")
-        return "\n\n".join(out) if out else f"No web search results found for '{query}'."
-    except Exception as e:
-        return f"Error searching web: {e}"
+        if res.returncode == 0 and res.stdout:
+            html_text = res.stdout
+    except Exception:
+        pass
+
+    # Fallback to Python urllib
+    if not html_text:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html_text = resp.read().decode("utf-8", errors="replace")
+
+    text = re.sub(r"<script.*?</script>", "", html_text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<style.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    preview = text[:5000]
+    return preview + ("\n...(content truncated)" if len(text) > 5000 else ""), len(text)
 
 
 def print_diff(old_text, new_text, filename):
@@ -143,7 +199,7 @@ class Agent:
         self.context = context
         self.temp = temp
         self.auto = auto
-        self.history = [{"role": "system", "content": SYSTEM_PROMPT}]
+        self.history = [{"role": "system", "content": get_system_prompt()}]
 
     def ask_permission(self, action_desc):
         """Prompts user for approval unless in auto mode."""
@@ -177,35 +233,21 @@ class Agent:
             url = args.get("url", "")
             print(f"\n{CYAN}🌐 Browsing:{RESET} {url}")
             try:
-                res = subprocess.run(
-                    ["curl", "-sL", "-A", "Mozilla/5.0 (X11; Linux x86_64)", "--max-time", "15", url],
-                    capture_output=True, text=True
-                )
-                html_text = res.stdout if res.returncode == 0 and res.stdout else ""
-                if not html_text:
-                    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                    with urllib.request.urlopen(req, timeout=15) as resp:
-                        html_text = resp.read().decode("utf-8", errors="replace")
-                
-                text = re.sub(r"<script.*?</script>", "", html_text, flags=re.DOTALL | re.IGNORECASE)
-                text = re.sub(r"<style.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
-                text = re.sub(r"<[^>]+>", " ", text)
-                text = re.sub(r"\s+", " ", text).strip()
-                preview = text[:5000]
-                print(f"   {GRAY}Retrieved {len(text)} characters.{RESET}")
-                return preview + ("\n...(content truncated)" if len(text) > 5000 else "")
+                preview, total_chars = fetch_url_content(url)
+                print(f"   {GRAY}Retrieved {total_chars} characters.{RESET}")
+                return preview
             except Exception as e:
                 return f"Error browsing '{url}': {e}"
 
         elif name == "open_browser":
             url = args.get("url", "")
             print(f"\n{CYAN}🖥️  Launch Browser:{RESET} {url}")
-            if not self.ask_permission(f"opening '{url}' in browser"):
+            if not self.ask_permission(f"opening '{url}' in desktop browser"):
                 return f"Opening browser for '{url}' skipped by user."
             try:
-                subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                print(f"   {GREEN}✓ Opened in desktop browser{RESET}")
-                return f"Successfully opened '{url}' in desktop browser."
+                webbrowser.open(url)
+                print(f"   {GREEN}✓ Opened in default web browser{RESET}")
+                return f"Successfully opened '{url}' in default browser."
             except Exception as e:
                 return f"Error opening browser: {e}"
 
@@ -218,27 +260,31 @@ class Agent:
                 p = Path(path)
                 if not p.is_file():
                     return f"Error: File '{path}' does not exist. Use write_file for new files."
-                old_text = p.read_text(encoding="utf-8")
+                old_text = p.read_text(encoding="utf-8", errors="replace")
                 
-                # Check match
-                if target not in old_text:
+                # Normalize line endings for reliable cross-platform matching (CRLF vs LF)
+                target_norm = target.replace("\r\n", "\n")
+                old_text_norm = old_text.replace("\r\n", "\n")
+                replacement_norm = replacement.replace("\r\n", "\n")
+
+                if target_norm not in old_text_norm:
                     # Whitespace-tolerant fallback
-                    norm_target = "\n".join(line.strip() for line in target.strip().splitlines())
-                    norm_file = "\n".join(line.strip() for line in old_text.splitlines())
+                    norm_target = "\n".join(line.strip() for line in target_norm.strip().splitlines())
+                    norm_file = "\n".join(line.strip() for line in old_text_norm.splitlines())
                     if norm_target not in norm_file:
-                        return f"Error: Target snippet not found in '{path}'. Please read the file first to get the exact lines."
-                
-                if old_text.count(target) > 1:
-                    return f"Error: Target snippet occurs {old_text.count(target)} times in '{path}'. Include more surrounding context lines to make it unique."
-                
-                new_text = old_text.replace(target, replacement, 1)
-                
-                # Show diff before approval
-                print_diff(old_text, new_text, path)
-                
+                        return f"Error: Target snippet not found in '{path}'. Please read the file with read_file first to see the exact lines."
+
+                if old_text_norm.count(target_norm) > 1:
+                    return f"Error: Target snippet occurs {old_text_norm.count(target_norm)} times in '{path}'. Include more surrounding context lines to make it unique."
+
+                new_text = old_text_norm.replace(target_norm, replacement_norm, 1)
+
+                # Show colored diff before applying
+                print_diff(old_text_norm, new_text, path)
+
                 if not self.ask_permission(f"modifications to '{path}'"):
                     return f"Editing '{path}' skipped by user."
-                
+
                 p.write_text(new_text, encoding="utf-8")
                 print(f"   {GREEN}✓ Successfully updated '{path}'{RESET}")
                 return f"File '{path}' successfully edited."
@@ -338,13 +384,40 @@ class Agent:
             query = args.get("query", "")
             search_path = args.get("path", ".")
             print(f"\n{CYAN}🔍 Code Search:{RESET} '{query}' in {search_path}")
+            
+            # Try ripgrep or grep first
             try:
-                cmd = f"rg -n -i --max-count 40 '{query}' {search_path} 2>/dev/null || grep -rnI --exclude-dir=.git '{query}' {search_path} 2>/dev/null"
-                res = subprocess.run(cmd, shell=True, text=True, capture_output=True, timeout=15)
+                cmd = f"rg -n -i --max-count 40 \"{query}\" \"{search_path}\" 2>/dev/null || grep -rnI --exclude-dir=.git \"{query}\" \"{search_path}\" 2>/dev/null"
+                res = subprocess.run(cmd, shell=True, text=True, capture_output=True, timeout=10)
                 lines = (res.stdout or "").strip().splitlines()[:40]
                 if lines:
                     print(f"   {GRAY}{len(lines)} matches found{RESET}")
                     return "\n".join(lines)
+            except Exception:
+                pass
+
+            # Pure Python cross-platform recursive search fallback (Windows / minimal systems)
+            matches = []
+            try:
+                for root, dirs, files in os.walk(search_path):
+                    dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("__pycache__", "node_modules", "target", "build", "dist")]
+                    for f in files:
+                        fpath = os.path.join(root, f)
+                        try:
+                            with open(fpath, "r", encoding="utf-8", errors="ignore") as fh:
+                                for lnum, line in enumerate(fh, 1):
+                                    if query.lower() in line.lower():
+                                        rel = os.path.relpath(fpath, search_path)
+                                        matches.append(f"{rel}:{lnum}: {line.strip()[:120]}")
+                                        if len(matches) >= 40:
+                                            break
+                        except Exception:
+                            pass
+                    if len(matches) >= 40:
+                        break
+                if matches:
+                    print(f"   {GRAY}{len(matches)} matches found{RESET}")
+                    return "\n".join(matches)
                 return f"No code matches found for '{query}'."
             except Exception as e:
                 return f"Error searching code: {e}"
@@ -468,14 +541,14 @@ def list_installed_models(host):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="qwen-agent (qc): Autonomous Local AI Engineer powered by Ollama.")
+    parser = argparse.ArgumentParser(description="qwen-agent (qc): Cross-Platform Autonomous Local AI Engineer powered by Ollama.")
     parser.add_argument("prompt", nargs="*", help="Direct prompt to execute (non-interactive mode)")
     parser.add_argument("-m", "--model", default=os.environ.get("QWEN_MODEL", "qwen2.5-coder:7b"), help="Ollama model name")
     parser.add_argument("-y", "--yes", action="store_true", help="Auto-approve all actions (Auto Mode)")
     parser.add_argument("-c", "--context", type=int, default=4096, help="Context window size in tokens")
     parser.add_argument("-t", "--temp", type=float, default=0.2, help="Sampling temperature")
     parser.add_argument("--host", default=os.environ.get("OLLAMA_API_BASE", "http://127.0.0.1:11434"), help="Ollama API base URL")
-    parser.add_argument("-v", "--version", action="version", version=f"qwen-agent {__version__}")
+    parser.add_argument("-v", "--version", action="version", version=f"qwen-agent {__version__} ({OS_NAME})")
 
     args = parser.parse_args()
 
@@ -490,7 +563,7 @@ def main():
     # Interactive REPL mode
     mode_str = f"{GREEN}Auto-Approve{RESET}" if agent.auto else f"{YELLOW}Permission Mode{RESET}"
     print(f"\n{BOLD}{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
-    print(f"{BOLD}{CYAN}⚡ Qwen Code Agent{RESET} {GRAY}v{__version__} • Local Autonomous Engineer{RESET}")
+    print(f"{BOLD}{CYAN}⚡ Qwen Code Agent{RESET} {GRAY}v{__version__} ({OS_NAME}) • Local Autonomous Engineer{RESET}")
     print(f"{GRAY}Model:{RESET} {GREEN}{agent.model}{RESET}  {GRAY}Mode:{RESET} {mode_str}  {GRAY}Context:{RESET} {agent.context}")
     print(f"{GRAY}Type /help for options, /models to list models, or 'exit' to quit.{RESET}")
     print(f"{BOLD}{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}\n")
@@ -511,7 +584,7 @@ def main():
             print(f"{GRAY}Goodbye!{RESET}")
             break
         elif user_input.lower() == "/clear":
-            agent.history = [{"role": "system", "content": SYSTEM_PROMPT}]
+            agent.history = [{"role": "system", "content": get_system_prompt()}]
             print(f"{YELLOW}Conversation reset.{RESET}\n")
             continue
         elif user_input.lower() in ("/auto", "/perm"):

@@ -1,13 +1,23 @@
 # ⚡ qwen-agent (`qc`)
 
 > **Turn your local Qwen model into an autonomous AI software engineer with full computer access.**  
-> 100% local, 100% private. An open-source alternative to Claude Code and Antigravity. Zero subscriptions, zero API keys, zero telemetry, and zero heavy dependencies.
+> 100% local, 100% private. Works natively on **Linux, macOS, and Windows**. Zero subscriptions, zero API keys, zero telemetry, and zero heavy dependencies.
 
 ---
 
 > [!WARNING]
 > ### 🚧 Active Development & Work-in-Progress (WIP)
-> This project is under active construction. It is currently **specifically tuned and optimized for `qwen2.5-coder:7b`** running locally via Ollama. Continuous updates, multi-model benchmarks, and new capabilities are being rolled out daily.
+> This project is under active construction. It is currently **specifically tuned and optimized for `qwen2.5-coder:7b`** running locally via Ollama. Continuous updates, cross-platform optimizations, and multi-model improvements are being added daily.
+
+---
+
+## 💻 Cross-Platform Support
+
+`qwen-agent` is engineered from the ground up to run natively across all three major operating systems:
+
+* 🐧 **Linux:** Native bash execution, `curl` / `urllib` networking, `xdg-open` / browser automation.
+* 🍎 **macOS:** Native zsh/bash execution, Apple Silicon GPU acceleration support (`mps`), native default browser launch.
+* 🪟 **Windows:** CMD & PowerShell terminal execution, ANSI color compatibility, pure Python recursive search fallback, Windows default browser launch, and batch wrappers (`qc.cmd`).
 
 ---
 
@@ -37,7 +47,7 @@ When you run an AI model locally (e.g. through `ollama run qwen2.5-coder`, LM St
  │ 🌐 Live DuckDuckGo Search   │ │ 🛡️ Permission Mode (Y/n/a)  │
  │ 📖 Real-Time Web Scraping   │ │ 🎨 Colored Diff Previews    │
  │ ✏️ Surgical File Editing    │ │ 🌿 Git Diff & Undo Commands │
- │ ⚡ Bash Command Execution   │ │ 🔄 Instant Model Switcher   │
+ │ ⚡ Bash/CMD/PS Execution    │ │ 🔄 Instant Model Switcher   │
  └─────────────────────────────┘ └─────────────────────────────┘
 ```
 
@@ -55,6 +65,7 @@ When you give `qwen-agent` a task, it:
 |---|:---:|:---:|:---:|:---:|
 | **100% Free & Local** | ✅ | ⚠️ Partial | ❌ ($20/mo + API) | **✅ Yes (Ollama)** |
 | **Complete Privacy (No Cloud)** | ✅ | ⚠️ | ❌ | **✅ 100% Local** |
+| **Cross-Platform (Linux/Mac/Win)** | ✅ | ⚠️ | ⚠️ | **✅ Linux, Mac, Win** |
 | **Surgical File Editing** | ❌ (Manual copy-paste) | ⚠️ (Often wipes files) | ✅ | **✅ Unified Diffs** |
 | **Terminal Execution** | ❌ | ⚠️ | ✅ | **✅ With Permissions** |
 | **Live Web Search** | ❌ | ❌ | ✅ | **✅ DuckDuckGo Lite** |
@@ -63,36 +74,23 @@ When you give `qwen-agent` a task, it:
 
 ---
 
-## ✨ Key Capabilities
-
-### 🌐 1. Live Web Search & Scraping
-* **`search_web`**: Queries DuckDuckGo Lite directly from Python (no API keys or subscriptions needed). Extracts top links and relevant snippets.
-* **`fetch_web`**: Downloads and strips clean text from any URL or GitHub repository using native `curl`.
-* **In-Chat Search:** Run `/search <query>` anytime directly inside the terminal prompt.
-
-### ✏️ 2. Surgical File Editing (No Recreating Files)
-* Modifies existing source files by replacing targeted snippets while keeping surrounding code, formatting, and comments intact.
-* Shows a **colorized terminal diff** before applying changes (`+` additions in green, `-` deletions in red).
-
-### 🛡️ 3. Safety First: Permission Mode vs Auto Mode
-* **Permission Mode (Default):** Prompts for confirmation before running commands, modifying files, or launching browsers (`Allow action? [Y/n/a]`).
-* **Auto Mode (`qc -y`):** Autonomously executes actions in a continuous self-healing loop for fast hands-off debugging.
-* Toggle between modes inside the chat anytime with `/auto` or `/perm`.
-
-### 🔄 4. Persistence & Self-Healing Loop
-* When a command fails or tests throw an `AssertionError`, `qwen-agent` analyzes the traceback, inspects the failing files, patches the bug, and re-executes until the tests pass.
-
----
-
 ## 🚀 Quick Install
 
-### Method 1: One-Line Installer (Recommended)
+### 🐧 Linux & 🍎 macOS (One-Line Installer)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/shoryasrivastava388-sys/qwen-agent/main/install.sh | bash
 ```
 
-### Method 2: Via Git & Pip
+### 🪟 Windows (PowerShell One-Liner)
+
+Open **PowerShell** and run:
+
+```powershell
+irm https://raw.githubusercontent.com/shoryasrivastava388-sys/qwen-agent/main/install.ps1 | iex
+```
+
+### 📦 Universal via Pip / uv (All Platforms)
 
 ```bash
 git clone https://github.com/shoryasrivastava388-sys/qwen-agent.git
@@ -100,16 +98,13 @@ cd qwen-agent
 pip install -e .
 ```
 
-Ensure `~/.local/bin` is in your `PATH`:
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
+Ensure `~/.local/bin` (or `%USERPROFILE%\.local\bin` on Windows) is in your `PATH`.
 
 ---
 
 ## 📋 Prerequisites
 
-Ensure [Ollama](https://ollama.com) is running locally with Qwen:
+Ensure [Ollama](https://ollama.com) is installed and running locally with Qwen:
 
 ```bash
 ollama run qwen2.5-coder:7b
@@ -176,11 +171,11 @@ Inside the interactive chat:
 | `edit_file` | Surgically edits existing files with unified diff previews |
 | `read_file` | Reads files with optional line offsets and limits |
 | `write_file` | Creates brand new files on disk |
-| `run_command` | Executes bash commands, builds, test suites, and scripts |
+| `run_command` | Executes bash / cmd / powershell commands, builds, test suites, and scripts |
 | `list_dir` | Recursive directory tree inspection |
-| `search_code` | Codebase-wide regex / keyword search (`ripgrep` / `grep`) |
+| `search_code` | Codebase-wide regex / keyword search (`ripgrep` / `grep` / pure Python) |
 | `git_diff` | Inspects current git status and working tree diffs |
-| `open_browser` | Opens URLs in the user's desktop browser (Firefox/Chrome) |
+| `open_browser` | Opens URLs in the user's desktop browser (Firefox/Chrome/Edge/Safari) |
 
 ---
 
