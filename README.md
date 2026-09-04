@@ -97,14 +97,15 @@ qc
 
 You can switch models anytime without restarting:
 
-1. **At launch:**
+1. **Interactive Keyboard Selector (Inside Chat):**
+   * Type `/models` $\rightarrow$ Opens an interactive terminal menu navigated with **`↑` / `↓` Arrow Keys** and **`Enter`** to instantly select and activate any locally installed Ollama model.
+2. **Direct Command (Inside Chat):**
+   * `/model <name>` $\rightarrow$ Switches active model directly (e.g. `/model deepseek-r1:8b`).
+3. **At launch:**
    ```bash
    qc -m deepseek-r1:8b
    ```
-2. **Inside chat live:**
-   * `/models` $\rightarrow$ Lists all models installed on your machine.
-   * `/model <name>` $\rightarrow$ Switches active model instantly (e.g. `/model qwen2.5-coder:14b`).
-3. **Permanent default via environment:**
+4. **Permanent default via environment:**
    ```bash
    export QWEN_MODEL="deepseek-r1:8b"
    ```
