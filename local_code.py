@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.5.2"
+__version__ = "1.5.3"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -520,6 +520,19 @@ def validate_code(path, content):
     return issues
 
 
+def _clean_arguments(args):
+    """Normalize tool arguments from dicts, single-item lists, or strings into a clean dict."""
+    if isinstance(args, list):
+        if len(args) > 0 and isinstance(args[0], dict):
+            return args[0]
+        elif len(args) > 0 and isinstance(args[0], str):
+            return {"url": args[0], "path": args[0], "command": args[0], "query": args[0]}
+        return {}
+    if isinstance(args, dict):
+        return args
+    return {}
+
+
 class Agent:
     def __init__(self, model="qwen2.5-coder:7b", host="http://127.0.0.1:11434", context=2048, temp=0.2, auto=False):
         self.model = model
@@ -553,7 +566,49 @@ class Agent:
             print(f"   {RED}Action skipped.{RESET}")
             return False
 
+    def find_active_target_file(self, user_prompt=""):
+        """Find the relevant target file from explicit mention, conversation history, or cwd."""
+        # 1. Explicit filename in prompt
+        cand_match = re.search(r"\b([~./\w-]+\.(?:html?|py|js|sh|css|json|rs|go|cpp|c))\b", user_prompt, re.IGNORECASE)
+        if cand_match:
+            p = Path(os.path.expanduser(cand_match.group(1)))
+            if not p.is_absolute():
+                p = (Path(os.getcwd()) / p).resolve()
+            if p.is_file():
+                return p
+
+        # 2. Check conversation history for files accessed by tools
+        for msg in reversed(self.history):
+            content = msg.get("content", "")
+            m = re.findall(r'"(?:path|url|file)"\s*:\s*"([^"]+\.(?:html?|py|js|sh|css|json|rs|go|cpp|c))"', content)
+            if m:
+                for cand_str in m:
+                    p = Path(os.path.expanduser(cand_str))
+                    if not p.is_absolute():
+                        p = (Path(os.getcwd()) / p).resolve()
+                    if p.is_file():
+                        return p
+
+        # 3. If browser/web/game/html/page is mentioned, find the newest HTML file in cwd
+        p_lower = user_prompt.lower()
+        if any(w in p_lower for w in ("browser", "html", "game", "page", "ui", "site", "web", "snake", "arcade")):
+            html_files = sorted(Path(os.getcwd()).glob("*.html"), key=lambda f: f.stat().st_mtime, reverse=True)
+            if html_files:
+                return html_files[0]
+
+        # 4. Check for newest code file in cwd
+        code_files = sorted(
+            [f for f in Path(os.getcwd()).iterdir() if f.is_file() and f.suffix.lower() in ('.py', '.js', '.html', '.sh')],
+            key=lambda f: f.stat().st_mtime,
+            reverse=True
+        )
+        if code_files:
+            return code_files[0]
+
+        return None
+
     def execute_tool(self, name, args, user_prompt=""):
+        args = _clean_arguments(args)
         if name == "search_web":
             query = args.get("query", "")
             print(f"\n{CYAN}🔍 Web Search:{RESET} '{query}'")
@@ -580,7 +635,11 @@ class Agent:
                 return f"Error browsing '{url}': {e}"
 
         elif name == "open_browser":
-            raw_target = (args.get("url") or args.get("path") or args.get("file") or "").strip()
+            raw_target = (args.get("url") or args.get("path") or args.get("file") or args.get("link") or args.get("target") or "").strip()
+            if not raw_target:
+                active_target = self.find_active_target_file(user_prompt)
+                if active_target:
+                    raw_target = str(active_target)
 
             # Guard against model opening external research links instead of the requested local file:
             p_lower = user_prompt.lower()
@@ -1038,14 +1097,15 @@ class Agent:
         for b in blocks:
             try:
                 data = json.loads(b)
-                if isinstance(data, dict) and "name" in data and "arguments" in data:
-                    return data["name"], data.get("arguments", {}), True
+                if isinstance(data, dict) and "name" in data and ("arguments" in data or "parameters" in data):
+                    raw_args = data.get("arguments") if "arguments" in data else data.get("parameters")
+                    return data["name"], _clean_arguments(raw_args), True
             except Exception:
                 pass
 
         # 2. Balanced brace scan for {"name": ..., "arguments": ...}
         # Handles nested braces, code containing CSS/JS, and escaped quotes properly
-        pattern = re.compile(r'\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:', flags=re.DOTALL)
+        pattern = re.compile(r'\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"(?:arguments|parameters)"\s*:', flags=re.DOTALL)
         for m in pattern.finditer(text):
             start = m.start()
             brace_count = 0
@@ -1071,8 +1131,9 @@ class Agent:
                             candidate = text[start:i+1]
                             try:
                                 data = json.loads(candidate)
-                                if isinstance(data, dict) and "name" in data and "arguments" in data:
-                                    return data["name"], data.get("arguments", {}), True
+                                if isinstance(data, dict) and "name" in data and ("arguments" in data or "parameters" in data):
+                                    raw_args = data.get("arguments") if "arguments" in data else data.get("parameters")
+                                    return data["name"], _clean_arguments(raw_args), True
                             except Exception:
                                 pass
                             break
@@ -1082,8 +1143,9 @@ class Agent:
         if stripped.startswith("{") and stripped.endswith("}"):
             try:
                 data = json.loads(stripped)
-                if isinstance(data, dict) and "name" in data and "arguments" in data:
-                    return data["name"], data.get("arguments", {}), True
+                if isinstance(data, dict) and "name" in data and ("arguments" in data or "parameters" in data):
+                    raw_args = data.get("arguments") if "arguments" in data else data.get("parameters")
+                    return data["name"], _clean_arguments(raw_args), True
             except Exception:
                 pass
 
@@ -1156,10 +1218,14 @@ class Agent:
                                     filename = phrase.lower().replace(" ", "_") + ext
                                     break
                             if not filename:
-                                stopwords = {"write", "a", "single", "file", "production", "ready", "cli", "tool", "that", "implements", "an", "the", "in", "and", "or", "to", "act", "as", "senior", "systems", "programmer", "follow", "these", "strict", "specifications", "create", "make", "build", "using", "module", "code", "runnable", "complete", "python"}
-                                words = [w.lower() for w in re.findall(r"[a-zA-Z0-9]+", user_prompt) if w.lower() not in stopwords]
-                                base = "_".join(words[:2]) if words else "script"
-                                filename = f"{base}{ext}"
+                                active_p = self.find_active_target_file(user_prompt)
+                                if active_p:
+                                    filename = active_p.name
+                                else:
+                                    stopwords = {"write", "a", "single", "file", "production", "ready", "cli", "tool", "that", "implements", "an", "the", "in", "and", "or", "to", "act", "as", "senior", "systems", "programmer", "follow", "these", "strict", "specifications", "create", "make", "build", "using", "module", "code", "runnable", "complete", "python"}
+                                    words = [w.lower() for w in re.findall(r"[a-zA-Z0-9]+", user_prompt) if w.lower() not in stopwords]
+                                    base = "_".join(words[:2]) if words else "script"
+                                    filename = f"{base}{ext}"
 
                     # If filename does not contain a directory, check if user specified one (e.g. "in Downloads" or "to ~/Downloads")
                     if filename and "/" not in filename:
@@ -1169,15 +1235,19 @@ class Agent:
                             if fld.lower() in ("downloads", "desktop", "documents", "code", "projects", "tmp") or fld.startswith(("~", "./", "/")):
                                 filename = f"{fld}/{filename}"
 
-                    # Safety check: If file already exists on disk, NEVER overwrite it with a snippet fallback!
+                    # Safety check: If file already exists on disk, only overwrite if it is a complete file, not a partial snippet!
                     if filename:
                         target_p = Path(os.path.expanduser(filename))
                         if not target_p.is_absolute():
                             target_p = (Path(os.getcwd()) / target_p).resolve()
                         if target_p.is_file():
-                            if target_p.suffix.lower() in (".html", ".htm") and not ("<html" in code.lower() or "<!doctype" in code.lower()):
-                                continue
-                            if any(w in user_prompt.lower() for w in ("edit", "fix", "unbug", "repair", "debug", "patch")):
+                            existing_lines = len(target_p.read_text(encoding="utf-8", errors="replace").splitlines())
+                            new_lines = len(code.splitlines())
+                            is_full_doc = (
+                                (target_p.suffix.lower() in (".html", ".htm") and ("<html" in code.lower() or "<!doctype" in code.lower()))
+                                or new_lines >= max(20, int(existing_lines * 0.7))
+                            )
+                            if not is_full_doc:
                                 continue
 
                     return "write_file", {"path": filename, "content": code}, True
@@ -1212,6 +1282,7 @@ class Agent:
         in_tool_block = False
         printed_prefix = False
         token_count = 0
+        preamble_buffer = ""
 
         # Background animated spinner while CPU is prefilling / evaluating prompt
         stop_spinner = threading.Event()
@@ -1263,6 +1334,7 @@ class Agent:
                         if printed_prefix:
                             sys.stdout.write(f"\r\033[K")
                             printed_prefix = False
+                        preamble_buffer = ""
                         sys.stdout.write(f"\r{CYAN}⚡ [Step {step}] Writing code directly to disk... ({token_count} tokens){RESET}\033[K")
                         sys.stdout.flush()
 
@@ -1291,18 +1363,29 @@ class Agent:
                             if valid:
                                 break
                     else:
-                        if not printed_prefix and accumulated.strip():
-                            sys.stdout.write(f"\r\033[K\n{BOLD}{CYAN}Qwen:{RESET} ")
-                            printed_prefix = True
-                        if printed_prefix:
-                            sys.stdout.write(token)
-                            sys.stdout.flush()
+                        preamble_buffer += token
+                        if len(preamble_buffer) >= 80:
+                            if not printed_prefix and preamble_buffer.strip():
+                                sys.stdout.write(f"\r\033[K\n{BOLD}{CYAN}Qwen:{RESET} ")
+                                printed_prefix = True
+                            if printed_prefix:
+                                sys.stdout.write(preamble_buffer)
+                                sys.stdout.flush()
+                            preamble_buffer = ""
 
             if in_tool_block:
                 sys.stdout.write(f"\r\033[K")
                 sys.stdout.flush()
-            elif printed_prefix:
-                print()
+            else:
+                if preamble_buffer:
+                    if not printed_prefix and preamble_buffer.strip():
+                        sys.stdout.write(f"\r\033[K\n{BOLD}{CYAN}Qwen:{RESET} ")
+                        printed_prefix = True
+                    if printed_prefix:
+                        sys.stdout.write(preamble_buffer)
+                        sys.stdout.flush()
+                if printed_prefix:
+                    print()
 
             return accumulated, printed_prefix
         except Exception as e:
@@ -1414,43 +1497,40 @@ class Agent:
                 self.history.append({"role": "assistant", "content": res})
             return
 
-        # Automated Pre-Execution Diagnostic Hook for bug fix requests
+        # Automated Pre-Execution Diagnostic Hook for bug fix and browser launch requests
         fix_match = None
-        cand_match = re.search(r"\b([~./\w-]+\.(?:html?|py|js|sh))\b", user_prompt, re.IGNORECASE)
+        cand = self.find_active_target_file(user_prompt)
         has_fix_word = bool(re.search(r"\b(?:fix|repair|debug|solve|unbug|bug|broken|issue)\b", user_prompt, re.IGNORECASE))
-        if cand_match and has_fix_word:
-            cand = Path(os.path.expanduser(cand_match.group(1)))
-            if not cand.is_absolute():
-                cand = (Path(os.getcwd()) / cand).resolve()
-            if cand.is_file():
-                fix_match = cand_match
-                try:
-                    f_content = cand.read_text(encoding="utf-8", errors="replace")
-                    issues = validate_code(str(cand), f_content)
-                    if issues:
-                        diag_msg = "\n".join(f"- {iss}" for iss in issues)
+        has_open_word = any(w in user_prompt.lower() for w in ("open", "browser", "launch", "play", "view", "test"))
+
+        if cand and cand.is_file():
+            try:
+                f_content = cand.read_text(encoding="utf-8", errors="replace")
+                issues = validate_code(str(cand), f_content)
+                if issues:
+                    fix_match = cand
+                    diag_msg = "\n".join(f"- {iss}" for iss in issues)
+                    user_prompt += (
+                        f"\n\n[Automated Static Diagnostics on {cand.name}]:\n{diag_msg}\n"
+                        f"Instructions: Use read_file to inspect {cand.name}, then use edit_file to surgically resolve all diagnostic issues. Once fixed, open it in the browser if it is an HTML file."
+                    )
+                    print(f"\n{YELLOW}🔍 Diagnostics found {len(issues)} issue(s) in {cand.name}:{RESET}")
+                    for iss in issues:
+                        print(f"   {RED}• {iss}{RESET}")
+                else:
+                    if cand.suffix.lower() in (".html", ".htm") and has_open_word:
+                        print(f"\n{GREEN}✓ Pre-flight diagnostic check: '{cand.name}' has 0 errors.{RESET}")
+                        self.execute_tool("open_browser", {"url": cand.name}, user_prompt=user_prompt)
+                        self.history.append({"role": "user", "content": user_prompt})
+                        self.history.append({"role": "assistant", "content": f"Inspected '{cand.name}' (0 diagnostic errors) and opened in your desktop web browser."})
+                        return
+                    elif has_fix_word:
                         user_prompt += (
-                            f"\n\n[Automated Static Diagnostics on {cand.name}]:\n{diag_msg}\n"
-                            f"Instructions: Use read_file to inspect {cand.name}, then use edit_file to surgically resolve all diagnostic issues. Once fixed, open it in the browser if it is an HTML file."
+                            f"\n\n[Target File: {cand.name} - 0 Diagnostic Errors Detected]\n"
+                            f"The file '{cand.name}' is valid with 0 diagnostic issues. If making enhancements, use 'edit_file'. Do NOT rewrite complete working files."
                         )
-                        print(f"\n{YELLOW}🔍 Diagnostics found {len(issues)} issue(s) in {cand.name}:{RESET}")
-                        for iss in issues:
-                            print(f"   {RED}• {iss}{RESET}")
-                    else:
-                        if any(w in user_prompt.lower() for w in ("open", "browser", "launch", "play", "view", "test")):
-                            user_prompt += (
-                                f"\n\n[Target File: {cand.name} - 0 Diagnostic Errors Detected]\n"
-                                f"The file '{cand.name}' is verified with 0 errors on disk. "
-                                f"DO NOT rewrite the file. DO NOT output code blocks in chat. "
-                                f"Invoke 'open_browser' now with args: {{\"url\": \"{cand.name}\"}} to open and test it."
-                            )
-                        else:
-                            user_prompt += (
-                                f"\n\n[Target File: {cand.name} - 0 Diagnostic Errors Detected]\n"
-                                f"The file '{cand.name}' is valid with 0 diagnostic issues. If making enhancements, use 'edit_file'. Do NOT rewrite complete working files."
-                            )
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
         # Tier 3: Full Autonomous Tool Agent
         self.history.append({"role": "user", "content": user_prompt})
@@ -1472,12 +1552,12 @@ class Agent:
             if not is_tool:
                 # Nudge guard: If this is a bug fix request and the model hasn't applied edit_file/write_file yet
                 if fix_match and not any(sig[0] in ("edit_file", "write_file") for sig in recent_tool_sigs) and step <= 3:
-                    cand = Path(os.path.expanduser(fix_match.group(1)))
+                    cand_name = fix_match.name if isinstance(fix_match, Path) else str(fix_match)
                     self.history.append({
                         "role": "user",
                         "content": (
-                            f"You inspected {cand.name}, but you have not applied the fix to disk yet. "
-                            f"You MUST invoke 'edit_file' now with the exact target snippet from {cand.name} "
+                            f"You inspected {cand_name}, but you have not applied the fix to disk yet. "
+                            f"You MUST invoke 'edit_file' now with the exact target snippet from {cand_name} "
                             f"to surgically resolve the issue. Do NOT provide explanations without modifying the file."
                         )
                     })
@@ -1485,8 +1565,9 @@ class Agent:
                     continue
 
                 if not was_streamed and res.strip():
-                    if not re.search(r'^\s*(?:```|\{\s*"name")', res):
-                        print(f"\n{BOLD}{CYAN}Qwen:{RESET} {res.strip()}")
+                    clean_res = re.sub(r"```[a-zA-Z0-9_-]*\s*\n.*?```", "", res, flags=re.DOTALL).strip()
+                    if clean_res and not re.search(r'^\s*(?:```|\{\s*"name")', clean_res):
+                        print(f"\n{BOLD}{CYAN}Qwen:{RESET} {clean_res}")
                 break
 
             print(" " * 30, end="\r")
@@ -1733,6 +1814,18 @@ def main():
             else:
                 print(f"{GRAY}Usage: /fix <filename> [optional issue description]{RESET}\n")
                 continue
+        elif user_input.lower().startswith(("/open", "/browser")):
+            parts = user_input.split(maxsplit=1)
+            target_arg = parts[1].strip() if len(parts) > 1 else ""
+            if not target_arg:
+                active_p = agent.find_active_target_file("browser html")
+                if active_p:
+                    target_arg = str(active_p)
+            if target_arg:
+                agent.execute_tool("open_browser", {"url": target_arg}, user_prompt=user_input)
+            else:
+                print(f"{GRAY}Usage: /open <filename.html or url> (or just /open to open current project){RESET}\n")
+            continue
         elif user_input.lower().startswith(("/ui", "/inspect")):
             parts = user_input.split(maxsplit=1)
             target_arg = parts[1].strip() if len(parts) > 1 else ""
@@ -1751,6 +1844,7 @@ def main():
             print(f"""
 {BOLD}Interactive Slash Commands:{RESET}
   {CYAN}cd <dir>{RESET}       Change current working directory (e.g. `cd ~/Downloads`)
+  {CYAN}/open [file]{RESET}   Instantly open HTML app or URL in desktop browser
   {CYAN}/fix <file>{RESET}    Run automated static diagnostics & autonomously fix file
   {CYAN}/ui <file>{RESET}     Capture headless screenshot, audit aesthetics & upgrade UI
   {CYAN}/models{RESET}        Interactive arrow-key menu to switch Ollama models
