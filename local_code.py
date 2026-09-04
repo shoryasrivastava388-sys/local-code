@@ -59,6 +59,9 @@ SHOW_CURSOR = "\033[?25h"
 
 SYSTEM_PROMPT_TEMPLATE = """You are Local Code (lc), an elite autonomous software engineering agent operating directly on the local machine.
 Host OS: {os_name}
+Current Working Directory: {cwd}
+All relative file paths are created, read, and edited directly in: {cwd} (unless the user explicitly specifies a different directory).
+
 You have native access to system tools for searching the web, browsing documentation, reading code, editing files, and running terminal commands.
 
 ## Available Tools
@@ -111,7 +114,8 @@ The tools are:
 
 
 def get_system_prompt():
-    return SYSTEM_PROMPT_TEMPLATE.replace("{os_name}", OS_NAME)
+    cwd = os.getcwd()
+    return SYSTEM_PROMPT_TEMPLATE.replace("{os_name}", OS_NAME).replace("{cwd}", cwd)
 
 
 def read_single_key():
@@ -424,11 +428,18 @@ class Agent:
             path = args.get("path", "")
             target = args.get("target", "")
             replacement = args.get("replacement", "")
-            print(f"\n{MAGENTA}✏️  Edit File:{RESET} {BOLD}{path}{RESET}")
+            p = Path(os.path.expanduser(path))
+            if not p.is_absolute():
+                p = (Path(os.getcwd()) / p).resolve()
+            display_path = str(p)
             try:
-                p = Path(path)
+                display_path = str(p.relative_to(os.getcwd()))
+            except ValueError:
+                pass
+            print(f"\n{MAGENTA}✏️  Edit File:{RESET} {BOLD}{display_path}{RESET}")
+            try:
                 if not p.is_file():
-                    return f"Error: File '{path}' does not exist. Use write_file for new files."
+                    return f"Error: File '{display_path}' does not exist. Use write_file for new files."
                 old_text = p.read_text(encoding="utf-8", errors="replace")
                 
                 # Normalize line endings for reliable cross-platform matching (CRLF vs LF)
@@ -440,51 +451,65 @@ class Agent:
                     norm_target = "\n".join(line.strip() for line in target_norm.strip().splitlines())
                     norm_file = "\n".join(line.strip() for line in old_text_norm.splitlines())
                     if norm_target not in norm_file:
-                        return f"Error: Target snippet not found in '{path}'. Please read the file with read_file first to see the exact lines."
+                        return f"Error: Target snippet not found in '{display_path}'. Please read the file with read_file first to see the exact lines."
 
                 if old_text_norm.count(target_norm) > 1:
-                    return f"Error: Target snippet occurs {old_text_norm.count(target_norm)} times in '{path}'. Include more surrounding context lines to make it unique."
+                    return f"Error: Target snippet occurs {old_text_norm.count(target_norm)} times in '{display_path}'. Include more surrounding context lines to make it unique."
 
                 new_text = old_text_norm.replace(target_norm, replacement_norm, 1)
 
                 # Show colored diff before applying
-                print_diff(old_text_norm, new_text, path)
+                print_diff(old_text_norm, new_text, display_path)
 
-                if not self.ask_permission(f"modifications to '{path}'"):
-                    return f"Editing '{path}' skipped by user."
+                if not self.ask_permission(f"modifications to '{display_path}'"):
+                    return f"Editing '{display_path}' skipped by user."
 
                 p.write_text(new_text, encoding="utf-8")
-                print(f"   {GREEN}✓ Successfully updated '{path}'{RESET}")
-                return f"File '{path}' successfully edited."
+                print(f"   {GREEN}✓ Successfully updated '{display_path}'{RESET}")
+                return f"File '{display_path}' successfully edited."
             except Exception as e:
-                return f"Error editing '{path}': {e}"
+                return f"Error editing '{display_path}': {e}"
 
         elif name == "write_file":
             path = args.get("path", "")
             content = args.get("content", "")
-            p = Path(path)
+            p = Path(os.path.expanduser(path))
+            if not p.is_absolute():
+                p = (Path(os.getcwd()) / p).resolve()
             is_new = not p.exists()
             label = "Create New File" if is_new else "Overwrite Entire File"
-            print(f"\n{GREEN}💾 {label}:{RESET} {BOLD}{path}{RESET} {GRAY}({len(content)} bytes){RESET}")
-            if not self.ask_permission(f"{label.lower()} '{path}'"):
-                return f"Writing '{path}' skipped by user."
+            display_path = str(p)
+            try:
+                display_path = str(p.relative_to(os.getcwd()))
+            except ValueError:
+                pass
+            print(f"\n{GREEN}💾 {label}:{RESET} {BOLD}{display_path}{RESET} {GRAY}({len(content)} bytes){RESET}")
+            if not self.ask_permission(f"{label.lower()} '{display_path}'"):
+                return f"Writing '{display_path}' skipped by user."
             try:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(content, encoding="utf-8")
-                print(f"   {GREEN}✓ Written '{path}'{RESET}")
-                return f"File '{path}' written successfully ({len(content)} bytes)."
+                print(f"   {GREEN}✓ Written '{display_path}'{RESET}")
+                return f"File '{display_path}' written successfully ({len(content)} bytes)."
             except Exception as e:
-                return f"Error writing file '{path}': {e}"
+                return f"Error writing file '{display_path}': {e}"
 
         elif name == "read_file":
             path = args.get("path", "")
             start = args.get("start_line", 1)
             count = args.get("line_count", None)
-            print(f"\n{BLUE}📖 Reading:{RESET} {path}")
+            p = Path(os.path.expanduser(path))
+            if not p.is_absolute():
+                p = (Path(os.getcwd()) / p).resolve()
+            display_path = str(p)
             try:
-                p = Path(path)
+                display_path = str(p.relative_to(os.getcwd()))
+            except ValueError:
+                pass
+            print(f"\n{BLUE}📖 Reading:{RESET} {display_path}")
+            try:
                 if not p.is_file():
-                    return f"Error: File '{path}' does not exist."
+                    return f"Error: File '{display_path}' does not exist."
                 lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
                 total = len(lines)
                 if start and start > 1:
@@ -495,12 +520,16 @@ class Agent:
                 print(f"   {GRAY}Read {len(lines)}/{total} lines{RESET}")
                 return "\n".join(numbered) or "(empty file)"
             except Exception as e:
-                return f"Error reading file '{path}': {e}"
+                return f"Error reading file '{display_path}': {e}"
 
         elif name == "run_command":
             cmd = args.get("command", "").strip()
             cwd = args.get("cwd", None)
-            print(f"\n{YELLOW}⚡ Command:{RESET} {BOLD}{cmd}{RESET}" + (f" {GRAY}(in {cwd}){RESET}" if cwd else ""))
+            if cwd:
+                cwd = str(Path(os.path.expanduser(cwd)).resolve())
+            else:
+                cwd = os.getcwd()
+            print(f"\n{YELLOW}⚡ Command:{RESET} {BOLD}{cmd}{RESET}" + (f" {GRAY}(in {cwd}){RESET}" if cwd != os.getcwd() else ""))
             if not self.ask_permission(f"command: '{cmd}'"):
                 return "Command skipped by user."
             try:
@@ -523,11 +552,18 @@ class Agent:
         elif name == "list_dir":
             path = args.get("path", ".")
             depth = args.get("max_depth", 2)
-            print(f"\n{CYAN}📁 Listing:{RESET} {path}")
+            root = Path(os.path.expanduser(path))
+            if not root.is_absolute():
+                root = (Path(os.getcwd()) / root).resolve()
+            display_path = str(root)
             try:
-                root = Path(path)
+                display_path = str(root.relative_to(os.getcwd()))
+            except ValueError:
+                pass
+            print(f"\n{CYAN}📁 Listing:{RESET} {display_path}")
+            try:
                 if not root.exists():
-                    return f"Error: Path '{path}' not found."
+                    return f"Error: Path '{display_path}' not found."
                 tree = []
                 def walk(cur, d):
                     if d > depth:
@@ -546,7 +582,7 @@ class Agent:
                 walk(root, 1)
                 return "\n".join(tree[:80]) or "(empty directory)"
             except Exception as e:
-                return f"Error listing directory '{path}': {e}"
+                return f"Error listing directory '{display_path}': {e}"
 
         elif name == "search_code":
             query = args.get("query", "")
@@ -680,8 +716,8 @@ class Agent:
                     ext = ext_map.get((lang or "").lower(), ".py" if "python" in user_prompt.lower() else ".txt")
 
                     filename = None
-                    # Check for explicit filename in prompt (e.g. rate_limiter.py)
-                    fn_match = re.search(r"(\b[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c)\b)", user_prompt, re.IGNORECASE)
+                    # Check for explicit filepath in prompt (e.g. rate_limiter.py, Downloads/app.py, ~/Downloads/app.py)
+                    fn_match = re.search(r"([~./\w_-]+/[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c)|\b[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c))\b", user_prompt, re.IGNORECASE)
                     if fn_match:
                         filename = fn_match.group(1)
                     else:
@@ -701,6 +737,14 @@ class Agent:
                                 words = [w.lower() for w in re.findall(r"[a-zA-Z0-9]+", user_prompt) if w.lower() not in stopwords]
                                 base = "_".join(words[:2]) if words else "script"
                                 filename = f"{base}{ext}"
+
+                    # If filename does not contain a directory, check if user specified one (e.g. "in Downloads" or "to ~/Downloads")
+                    if filename and "/" not in filename:
+                        folder_match = re.search(r'(?:in|to|inside)\s+(?:the\s+)?([~./\w_-]+)', user_prompt, re.IGNORECASE)
+                        if folder_match:
+                            fld = folder_match.group(1).rstrip("/.,")
+                            if fld.lower() in ("downloads", "desktop", "documents", "code", "projects", "tmp") or fld.startswith(("~", "./", "/")):
+                                filename = f"{fld}/{filename}"
 
                     return "write_file", {"path": filename, "content": code}, True
 
@@ -852,17 +896,22 @@ def main():
         return
 
     # Interactive REPL mode
+    cwd_str = os.getcwd()
+    home = os.path.expanduser("~")
+    short_cwd = cwd_str.replace(home, "~") if cwd_str.startswith(home) else cwd_str
     mode_str = f"{GREEN}Auto-Approve{RESET}" if agent.auto else f"{YELLOW}Permission Mode{RESET}"
     print(f"\n{BOLD}{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
     print(f"{BOLD}{CYAN}⚡ Local Code{RESET} {GRAY}v{__version__} ({OS_NAME}) • Universal Autonomous Local AI{RESET}")
     print(f"{GRAY}Model:{RESET} {GREEN}{agent.model}{RESET}  {GRAY}Mode:{RESET} {mode_str}  {GRAY}Context:{RESET} {agent.context}")
-    print(f"{GRAY}Type /help for options, /models to select models, or 'exit' to quit.{RESET}")
+    print(f"{GRAY}Directory:{RESET} {CYAN}{short_cwd}{RESET} {GRAY}({cwd_str}){RESET}")
+    print(f"{GRAY}Commands: /help, /models, cd <dir>, or 'exit' to quit.{RESET}")
     print(f"{BOLD}{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}\n")
 
     while True:
         try:
-            cwd_name = Path.cwd().name
-            prompt_symbol = f"{BOLD}{GREEN}[{cwd_name}] >{RESET} "
+            cwd_str = os.getcwd()
+            short_cwd = cwd_str.replace(home, "~") if cwd_str.startswith(home) else cwd_str
+            prompt_symbol = f"{BOLD}{GREEN}[{short_cwd}] >{RESET} "
             user_input = input(prompt_symbol).strip()
             user_input = re.sub(r'(\x1b\[E|\^[E])', '\n', user_input).strip()
         except (KeyboardInterrupt, EOFError):
@@ -870,6 +919,23 @@ def main():
             break
 
         if not user_input:
+            continue
+
+        # Built-in cd command to navigate between directories inside lc
+        user_lower = user_input.lower()
+        if user_lower.startswith(("cd ", "/cd ")) or user_lower in ("cd", "/cd"):
+            parts = user_input.split(maxsplit=1)
+            target = parts[1].strip() if len(parts) > 1 else "~"
+            target_path = Path(os.path.expanduser(target)).resolve()
+            if target_path.is_dir():
+                os.chdir(target_path)
+                cwd_str = os.getcwd()
+                short_cwd = cwd_str.replace(home, "~") if cwd_str.startswith(home) else cwd_str
+                print(f"{GREEN}✓ Changed directory to:{RESET} {BOLD}{short_cwd}{RESET} {GRAY}({cwd_str}){RESET}\n")
+                # Update system prompt with new working directory
+                agent.history[0]["content"] = get_system_prompt()
+            else:
+                print(f"{RED}Directory not found: {target}{RESET}\n")
             continue
 
         if user_input.lower() in ("exit", "quit", ":q"):
@@ -943,6 +1009,7 @@ def main():
         elif user_input.lower() == "/help":
             print(f"""
 {BOLD}Interactive Slash Commands:{RESET}
+  {CYAN}cd <dir>{RESET}       Change current working directory (e.g. `cd ~/Downloads`)
   {CYAN}/models{RESET}        Interactive arrow-key menu to switch Ollama models
   {CYAN}/auto{RESET}          Toggle between Permission Mode and Auto-Approve Mode
   {CYAN}/diff{RESET}          Show current uncommitted git diff
