@@ -324,8 +324,8 @@ def fetch_url_content(url):
     text = re.sub(r"<style.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    preview = text[:5000]
-    return preview + ("\n...(content truncated)" if len(text) > 5000 else ""), len(text)
+    preview = text[:2500]
+    return preview + ("\n...(content truncated)" if len(text) > 2500 else ""), len(text)
 
 
 def print_diff(old_text, new_text, filename):
@@ -597,28 +597,73 @@ class Agent:
         return f"Unknown tool: '{name}'."
 
     def extract_tool_call(self, text):
-        match = re.search(r"```(?:json)?\s*(\{\s*\"name\"\s*:\s*\"([^\"]+)\"\s*,\s*\"arguments\"\s*:\s*(\{.*?\})\s*\})\s*```", text, flags=re.DOTALL)
-        if match:
+        """Extract tool call using markdown blocks, balanced-brace parsing, and raw JSON fallback."""
+        # 1. Try finding markdown code block with json
+        blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+        for b in blocks:
             try:
-                return match.group(2), json.loads(match.group(3)), True
+                data = json.loads(b)
+                if isinstance(data, dict) and "name" in data and "arguments" in data:
+                    return data["name"], data.get("arguments", {}), True
             except Exception:
                 pass
-        match = re.search(r'\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{.*?\})\s*\}', text, flags=re.DOTALL)
-        if match:
+
+        # 2. Balanced brace scan for {"name": ..., "arguments": ...}
+        # Handles nested braces, code containing CSS/JS, and escaped quotes properly
+        pattern = re.compile(r'\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:', flags=re.DOTALL)
+        for m in pattern.finditer(text):
+            start = m.start()
+            brace_count = 0
+            in_string = False
+            escape = False
+            for i in range(start, len(text)):
+                ch = text[i]
+                if escape:
+                    escape = False
+                    continue
+                if ch == '\\':
+                    escape = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                    continue
+                if not in_string:
+                    if ch == '{':
+                        brace_count += 1
+                    elif ch == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            candidate = text[start:i+1]
+                            try:
+                                data = json.loads(candidate)
+                                if isinstance(data, dict) and "name" in data and "arguments" in data:
+                                    return data["name"], data.get("arguments", {}), True
+                            except Exception:
+                                pass
+                            break
+
+        # 3. Fallback: try whole string if it starts and ends with { }
+        stripped = text.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
             try:
-                return match.group(1), json.loads(match.group(2)), True
+                data = json.loads(stripped)
+                if isinstance(data, dict) and "name" in data and "arguments" in data:
+                    return data["name"], data.get("arguments", {}), True
             except Exception:
                 pass
+
         return None, None, False
 
-    def stream_turn(self):
+    def stream_turn(self, step=1):
+        num_threads = min(os.cpu_count() or 4, 4)
         payload = {
             "model": self.model,
             "messages": self.history,
             "stream": True,
             "options": {
                 "num_ctx": self.context,
-                "temperature": self.temp
+                "temperature": self.temp,
+                "num_thread": num_threads
             }
         }
         url = f"{self.host}/api/chat"
@@ -629,8 +674,9 @@ class Agent:
         )
 
         accumulated = ""
-        is_tool = None
+        in_tool_block = False
         printed_prefix = False
+        token_count = 0
 
         try:
             with urllib.request.urlopen(req, timeout=300) as resp:
@@ -643,22 +689,26 @@ class Agent:
                         continue
                     
                     accumulated += token
+                    token_count += 1
 
-                    if is_tool is None:
-                        s = accumulated.strip()
-                        if len(s) >= 4:
-                            if s.startswith("```") or s.startswith("{"):
-                                is_tool = True
-                            else:
-                                is_tool = False
-                                if not printed_prefix:
-                                    print(f"\n{BOLD}{CYAN}Qwen:{RESET} ", end="", flush=True)
-                                    printed_prefix = True
-                                print(accumulated, end="", flush=True)
-                    elif is_tool is False:
-                        print(token, end="", flush=True)
+                    if "```json" in accumulated or '{"name"' in accumulated or '{"name":' in accumulated:
+                        in_tool_block = True
 
-            if printed_prefix:
+                    if in_tool_block:
+                        sys.stdout.write(f"\r{CYAN}⚡ [Step {step}] Generating action... ({token_count} tokens){RESET}\033[K")
+                        sys.stdout.flush()
+                    else:
+                        if not printed_prefix and accumulated.strip():
+                            sys.stdout.write(f"\r\033[K\n{BOLD}{CYAN}Qwen:{RESET} ")
+                            printed_prefix = True
+                        if printed_prefix:
+                            sys.stdout.write(token)
+                            sys.stdout.flush()
+
+            if in_tool_block:
+                sys.stdout.write(f"\r\033[K")
+                sys.stdout.flush()
+            elif printed_prefix:
                 print()
 
             return accumulated
@@ -672,7 +722,7 @@ class Agent:
 
         while step <= max_steps:
             print(f"{DIM}[Step {step}] Thinking...{RESET}", end="\r", flush=True)
-            res = self.stream_turn()
+            res = self.stream_turn(step=step)
             if not res:
                 break
 
