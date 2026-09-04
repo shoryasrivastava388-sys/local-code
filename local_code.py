@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -149,25 +149,28 @@ def read_single_key():
             old = termios.tcgetattr(fd)
             try:
                 tty.setraw(fd)
-                ch = sys.stdin.read(1)
-                if ch == '\x1b':
-                    r, _, _ = select.select([sys.stdin], [], [], 0.05)
-                    if r:
-                        ch2 = sys.stdin.read(1)
-                        if ch2 == '[':
-                            ch3 = sys.stdin.read(1)
-                            if ch3 == 'A': return 'up'
-                            if ch3 == 'B': return 'down'
-                            if ch3 == 'C': return 'right'
-                            if ch3 == 'D': return 'left'
-                            # Consume rest of multi-char escape sequence (e.g. 2~ for Insert key)
-                            while select.select([sys.stdin], [], [], 0.03)[0]:
-                                sys.stdin.read(1)
-                            return 'special'
-                    return 'esc'
-                if ch in ('\r', '\n'): return 'enter'
-                if ch == '\x03': return 'ctrl_c'
-                return ch.lower()
+                raw = os.read(fd, 1)
+                if not raw:
+                    return None
+                if raw == b'\x1b':
+                    seq = raw
+                    while select.select([fd], [], [], 0.05)[0]:
+                        more = os.read(fd, 8)
+                        if not more:
+                            break
+                        seq += more
+                    if seq in (b'\x1b[A', b'\x1bOA'): return 'up'
+                    elif seq in (b'\x1b[B', b'\x1bOB'): return 'down'
+                    elif seq in (b'\x1b[C', b'\x1bOC'): return 'right'
+                    elif seq in (b'\x1b[D', b'\x1bOD'): return 'left'
+                    elif seq == b'\x1b': return 'esc'
+                    return 'special'
+                if raw in (b'\r', b'\n'): return 'enter'
+                if raw == b'\x03': return 'ctrl_c'
+                try:
+                    return raw.decode('utf-8').lower()
+                except Exception:
+                    return 'special'
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old)
         except Exception:
@@ -214,6 +217,21 @@ def select_menu(title, options, default_idx=0, shortcuts=None):
         except Exception:
             return 0, values[0]
 
+    # Flush any stale/buffered keystrokes entered while the model was computing
+    if not IS_WINDOWS:
+        try:
+            import termios
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        except Exception:
+            pass
+    else:
+        try:
+            import msvcrt
+            while msvcrt.kbhit():
+                msvcrt.getwch()
+        except Exception:
+            pass
+
     # Interactive arrow-key loop
     print(f"\n{BOLD}{title}{RESET} {GRAY}(Use ↑/↓ to navigate, Enter to select, Esc to cancel){RESET}")
     sys.stdout.write(HIDE_CURSOR)
@@ -235,8 +253,8 @@ def select_menu(title, options, default_idx=0, shortcuts=None):
     try:
         while True:
             key = read_single_key()
-            if key is None:
-                break
+            if key is None or key == 'special':
+                continue
 
             if key in ('up', 'k'):
                 idx = (idx - 1) % len(labels)
