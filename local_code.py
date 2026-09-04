@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.4.5"
+__version__ = "1.4.6"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -105,10 +105,11 @@ The tools are:
    - ALWAYS read the file with `read_file` first, then use `edit_file` to replace only the targeted snippet.
    - Use `write_file` ONLY when creating brand new files that do not exist on disk.
 3. WEB RESEARCH:
-   - When asked to search the web, research an API, or find documentation, your FIRST tool action MUST be `search_web` before writing any code.
-   - When inspecting details from search results, use `fetch_web` to inspect the page.
+   - When asked to search the web, research an API, or find documentation, use `search_web` ONCE to discover the necessary information.
+   - Once research results are retrieved, do NOT keep searching or browsing in loops. Move IMMEDIATELY to creating or editing the files using `write_file` or `edit_file`.
 4. MULTI-STEP BROWSER & RUN EXECUTION:
-   - If the user requested to open, launch, or play a file in the browser, you MUST invoke `open_browser` as your next action after `write_file`.
+   - If the user requested to open, launch, or play a file in the browser, you MUST write the file with `write_file` first, and then invoke `open_browser` on that local file (e.g. `{"url": "snake.html"}`).
+   - NEVER call `open_browser` on external research URLs or documentation links from web searches. `open_browser` is reserved for opening the user's local project files.
    - If the user requested to test, run, or execute a script, you MUST invoke `run_command` as your next action after `write_file`.
 5. NATIVE ACCESS & CAPABILITIES:
    - NEVER claim "I am just a language model", "I cannot access the web", or "I cannot do anything outside this text box". You have full system and web access.
@@ -422,7 +423,7 @@ class Agent:
             print(f"   {RED}Action skipped.{RESET}")
             return False
 
-    def execute_tool(self, name, args):
+    def execute_tool(self, name, args, user_prompt=""):
         if name == "search_web":
             query = args.get("query", "")
             print(f"\n{CYAN}🔍 Web Search:{RESET} '{query}'")
@@ -450,6 +451,18 @@ class Agent:
 
         elif name == "open_browser":
             raw_target = (args.get("url") or args.get("path") or args.get("file") or "").strip()
+
+            # Guard against model opening external research links instead of the requested local file:
+            p_lower = user_prompt.lower()
+            html_matches = re.findall(r"\b[\w-]+\.html?\b", user_prompt, re.IGNORECASE)
+            if raw_target.startswith(("http://", "https://")) and html_matches:
+                local_html = html_matches[0]
+                local_p = (Path(os.getcwd()) / local_html).resolve()
+                if local_p.exists():
+                    raw_target = str(local_p)
+                else:
+                    return f"Action rejected: The user requested to create '{local_html}'. You must write '{local_html}' using write_file first before opening it. Do NOT open external research websites in the user's browser."
+
             p = Path(os.path.expanduser(raw_target))
             if not p.is_absolute():
                 p = (Path(os.getcwd()) / p).resolve()
@@ -956,10 +969,10 @@ class Agent:
             elif printed_prefix:
                 print()
 
-            return accumulated
+            return accumulated, printed_prefix
         except Exception as e:
             print(f"\n{RED}Inference error: {e}{RESET}")
-            return ""
+            return "", False
         finally:
             stop_spinner.set()
 
@@ -1061,7 +1074,7 @@ class Agent:
                     "Provide clear code snippets inside markdown blocks if helpful."
                 )
             }
-            res = self.stream_turn(step=1, user_prompt=user_prompt, messages=temp_history, spinner_label="Formulating explanation...")
+            res, was_streamed = self.stream_turn(step=1, user_prompt=user_prompt, messages=temp_history, spinner_label="Formulating explanation...")
             if res:
                 self.history.append({"role": "assistant", "content": res})
             return
@@ -1069,9 +1082,10 @@ class Agent:
         # Tier 3: Full Autonomous Tool Agent
         self.history.append({"role": "user", "content": user_prompt})
         step = 1
+        recent_tool_sigs = []
 
         while step <= max_steps:
-            res = self.stream_turn(
+            res, was_streamed = self.stream_turn(
                 step=step,
                 user_prompt=user_prompt,
                 spinner_label="Planning actions & tools..." if step == 1 else "Formulating next step..."
@@ -1083,13 +1097,23 @@ class Agent:
             name, args, is_tool = self.extract_tool_call(res, user_prompt=user_prompt, step=step)
 
             if not is_tool:
-                if not any(marker in res for marker in ("Qwen:",)) and res.strip():
+                if not was_streamed and res.strip():
                     if not re.search(r'^\s*(?:```|\{\s*"name")', res):
                         print(f"\n{BOLD}{CYAN}Qwen:{RESET} {res.strip()}")
                 break
 
             print(" " * 30, end="\r")
-            result = self.execute_tool(name, args)
+
+            # Loop detection / anti-repetition guard:
+            sig = (name, json.dumps(args, sort_keys=True))
+            if recent_tool_sigs.count(sig) >= 1 and name in ("search_web", "fetch_web"):
+                fn_match = re.search(r"([~./\w_-]+/[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c)|\b[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c))\b", user_prompt, re.IGNORECASE)
+                target_file = fn_match.group(1) if fn_match else "the requested code file"
+                result = f"Loop prevented: Web research is already complete. Proceed IMMEDIATELY to invoke 'write_file' to create '{target_file}' with your code implementation. Do NOT search or browse the web again."
+                print(f"   {YELLOW}⚡ Research complete. Transitioning directly to code creation...{RESET}")
+            else:
+                recent_tool_sigs.append(sig)
+                result = self.execute_tool(name, args, user_prompt=user_prompt)
 
             # Construct dynamic next-step prompt to maintain chaining for 7B models
             feedback = f"[Result of {name}]:\n{result}\n"
@@ -1102,10 +1126,13 @@ class Agent:
                     feedback += "The user requested to run or test the code. Invoke 'run_command' now to execute and verify."
                 else:
                     feedback += "If the requested task is complete, provide your concise final response directly without calling any tools. Otherwise, proceed to the next necessary tool action."
-            elif name == "search_web":
-                feedback += "Web search results retrieved above. Proceed to implement the requested solution or create the file using write_file."
-            elif name == "fetch_web":
-                feedback += "Web page content retrieved above. Proceed with the next necessary tool action."
+            elif name in ("search_web", "fetch_web"):
+                fn_match = re.search(r"([~./\w_-]+/[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c)|\b[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c))\b", user_prompt, re.IGNORECASE)
+                target_f = fn_match.group(1) if fn_match else ""
+                if target_f and any(w in p_lower for w in ("create", "write", "make", "build", "game", "app", "script")):
+                    feedback += f"Web research complete. You have the needed information and palettes. Now invoke 'write_file' IMMEDIATELY to create '{target_f}'. Do NOT call search_web or fetch_web again."
+                else:
+                    feedback += "Web research complete. Proceed to implement the solution or create the file using write_file."
             elif name == "open_browser":
                 feedback += "Browser launched successfully. If the requested task is complete, provide your concise final response directly without calling any tools."
             else:
