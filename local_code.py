@@ -601,7 +601,7 @@ class Agent:
 
         return f"Unknown tool: '{name}'."
 
-    def extract_tool_call(self, text, user_prompt=""):
+    def extract_tool_call(self, text, user_prompt="", step=1):
         """Extract tool call using markdown blocks, balanced-brace parsing, and raw JSON fallback.
         Also provides an agentic fallback: if the model produced a code block instead of JSON,
         automatically converts it into a write_file tool call so code is saved to disk."""
@@ -659,49 +659,50 @@ class Agent:
             except Exception:
                 pass
 
-        # 4. Agentic Fallback: Model produced a raw code block (```python, ```js, etc.) instead of JSON!
+        # 4. Agentic Fallback: Model produced a raw code block on Step 1 instead of JSON!
         # Automatically convert it into a write_file action so code is saved to disk immediately.
-        code_blocks = re.findall(r"```([a-zA-Z0-9_-]+)?\s*\n(.*?)```", text, flags=re.DOTALL)
-        for lang, code in code_blocks:
-            code = code.strip()
-            if code.count("\n") >= 4 and not (code.startswith("{") and code.endswith("}")):
-                ext_map = {
-                    "python": ".py", "py": ".py",
-                    "javascript": ".js", "js": ".js",
-                    "typescript": ".ts", "ts": ".ts",
-                    "html": ".html", "htm": ".html",
-                    "css": ".css",
-                    "bash": ".sh", "sh": ".sh",
-                    "json": ".json",
-                    "rust": ".rs", "rs": ".rs",
-                    "go": ".go", "cpp": ".cpp", "c": ".c"
-                }
-                ext = ext_map.get((lang or "").lower(), ".py" if "python" in user_prompt.lower() else ".txt")
+        if step == 1:
+            code_blocks = re.findall(r"```([a-zA-Z0-9_-]+)?\s*\n(.*?)```", text, flags=re.DOTALL)
+            for lang, code in code_blocks:
+                code = code.strip()
+                if code.count("\n") >= 8 and not (code.startswith("{") and code.endswith("}")):
+                    ext_map = {
+                        "python": ".py", "py": ".py",
+                        "javascript": ".js", "js": ".js",
+                        "typescript": ".ts", "ts": ".ts",
+                        "html": ".html", "htm": ".html",
+                        "css": ".css",
+                        "bash": ".sh", "sh": ".sh",
+                        "json": ".json",
+                        "rust": ".rs", "rs": ".rs",
+                        "go": ".go", "cpp": ".cpp", "c": ".c"
+                    }
+                    ext = ext_map.get((lang or "").lower(), ".py" if "python" in user_prompt.lower() else ".txt")
 
-                filename = None
-                # Check for explicit filename in prompt (e.g. rate_limiter.py)
-                fn_match = re.search(r"(\b[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c)\b)", user_prompt, re.IGNORECASE)
-                if fn_match:
-                    filename = fn_match.group(1)
-                else:
-                    first_line = code.splitlines()[0].strip() if code else ""
-                    first_match = re.search(r"[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c)", first_line, re.IGNORECASE)
-                    if first_match:
-                        filename = first_match.group(0)
+                    filename = None
+                    # Check for explicit filename in prompt (e.g. rate_limiter.py)
+                    fn_match = re.search(r"(\b[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c)\b)", user_prompt, re.IGNORECASE)
+                    if fn_match:
+                        filename = fn_match.group(1)
                     else:
-                        # Check for capitalized topic phrases like "Rate Limiter", "Chess Game"
-                        cap_phrases = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b", user_prompt)
-                        for phrase in cap_phrases:
-                            if not any(w in phrase.lower() for w in ("act as", "follow these", "strict specifications", "senior systems")):
-                                filename = phrase.lower().replace(" ", "_") + ext
-                                break
-                        if not filename:
-                            stopwords = {"write", "a", "single", "file", "production", "ready", "cli", "tool", "that", "implements", "an", "the", "in", "and", "or", "to", "act", "as", "senior", "systems", "programmer", "follow", "these", "strict", "specifications", "create", "make", "build", "using", "module", "code", "runnable", "complete", "python"}
-                            words = [w.lower() for w in re.findall(r"[a-zA-Z0-9]+", user_prompt) if w.lower() not in stopwords]
-                            base = "_".join(words[:2]) if words else "script"
-                            filename = f"{base}{ext}"
+                        first_line = code.splitlines()[0].strip() if code else ""
+                        first_match = re.search(r"[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c)", first_line, re.IGNORECASE)
+                        if first_match:
+                            filename = first_match.group(0)
+                        else:
+                            # Check for capitalized topic phrases like "Rate Limiter", "Chess Game"
+                            cap_phrases = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b", user_prompt)
+                            for phrase in cap_phrases:
+                                if not any(w in phrase.lower() for w in ("act as", "follow these", "strict specifications", "senior systems")):
+                                    filename = phrase.lower().replace(" ", "_") + ext
+                                    break
+                            if not filename:
+                                stopwords = {"write", "a", "single", "file", "production", "ready", "cli", "tool", "that", "implements", "an", "the", "in", "and", "or", "to", "act", "as", "senior", "systems", "programmer", "follow", "these", "strict", "specifications", "create", "make", "build", "using", "module", "code", "runnable", "complete", "python"}
+                                words = [w.lower() for w in re.findall(r"[a-zA-Z0-9]+", user_prompt) if w.lower() not in stopwords]
+                                base = "_".join(words[:2]) if words else "script"
+                                filename = f"{base}{ext}"
 
-                return "write_file", {"path": filename, "content": code}, True
+                    return "write_file", {"path": filename, "content": code}, True
 
         return None, None, False
 
@@ -780,7 +781,7 @@ class Agent:
                 break
 
             self.history.append({"role": "assistant", "content": res})
-            name, args, is_tool = self.extract_tool_call(res, user_prompt=user_prompt)
+            name, args, is_tool = self.extract_tool_call(res, user_prompt=user_prompt, step=step)
 
             if not is_tool:
                 break
