@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.4.3"
+__version__ = "1.4.4"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -77,8 +77,8 @@ The tools are:
   args: `{"query": "search keywords"}`
 - `fetch_web`: Fetch and extract clean text from any URL or GitHub repository.
   args: `{"url": "https://..."}`
-- `open_browser`: Open a URL in the desktop web browser.
-  args: `{"url": "https://..."}`
+- `open_browser`: Open any URL or local HTML file in the user's desktop web browser.
+  args: `{"url": "filename.html" or "https://..."}`
 - `read_file`: Read file contents with line numbers.
   args: `{"path": "filepath", "start_line": optional_int, "line_count": optional_int}`
 - `edit_file`: Surgically replace a specific target code snippet in an EXISTING file.
@@ -104,13 +104,17 @@ The tools are:
    - When modifying an existing file, NEVER rewrite or recreate the file with `write_file`.
    - ALWAYS read the file with `read_file` first, then use `edit_file` to replace only the targeted snippet.
    - Use `write_file` ONLY when creating brand new files that do not exist on disk.
-3. WEB RESEARCH & IMPLEMENTATION:
-   - When asked to search, research, or implement external libraries/APIs, use `search_web` to discover solutions, `fetch_web` to inspect details, and then apply the code directly.
-4. NATIVE ACCESS & CAPABILITIES:
+3. WEB RESEARCH:
+   - When asked to search the web, research an API, or find documentation, your FIRST tool action MUST be `search_web` before writing any code.
+   - When inspecting details from search results, use `fetch_web` to inspect the page.
+4. MULTI-STEP BROWSER & RUN EXECUTION:
+   - If the user requested to open, launch, or play a file in the browser, you MUST invoke `open_browser` as your next action after `write_file`.
+   - If the user requested to test, run, or execute a script, you MUST invoke `run_command` as your next action after `write_file`.
+5. NATIVE ACCESS & CAPABILITIES:
    - NEVER claim "I am just a language model", "I cannot access the web", or "I cannot do anything outside this text box". You have full system and web access.
-5. NO CODE LECTURES:
+6. NO CODE LECTURES:
    - Do NOT lecture the user on basic code syntax. Apply the changes to the files, run tests or verification commands, and report concise outcomes.
-6. SELF-HEALING:
+7. SELF-HEALING:
    - If tests fail, builds break, or commands error, inspect the error trace, patch the code, and re-run tests until passing.
 """
 
@@ -422,29 +426,58 @@ class Agent:
         if name == "search_web":
             query = args.get("query", "")
             print(f"\n{CYAN}🔍 Web Search:{RESET} '{query}'")
+            if not self.ask_permission(f"web search for '{query}'"):
+                return f"Web search for '{query}' skipped by user."
             res = search_duckduckgo(query)
-            print(f"   {GRAY}Search complete. Formulating next step...{RESET}")
+            titles = re.findall(r'\[\d+\]\s*(.*?)\n', res)
+            if titles:
+                for t in titles[:3]:
+                    print(f"   {GRAY}• {t}{RESET}")
+            print(f"   {GREEN}✓ Search complete{RESET}")
             return res
 
         elif name == "fetch_web":
             url = args.get("url", "")
             print(f"\n{CYAN}🌐 Browsing:{RESET} {url}")
+            if not self.ask_permission(f"fetching web content from '{url}'"):
+                return f"Browsing '{url}' skipped by user."
             try:
                 preview, total_chars = fetch_url_content(url)
-                print(f"   {GRAY}Retrieved {total_chars} characters.{RESET}")
+                print(f"   {GREEN}✓ Retrieved {total_chars} characters{RESET}")
                 return preview
             except Exception as e:
                 return f"Error browsing '{url}': {e}"
 
         elif name == "open_browser":
-            url = args.get("url", "")
-            print(f"\n{CYAN}🖥️  Launch Browser:{RESET} {url}")
-            if not self.ask_permission(f"opening '{url}' in desktop browser"):
-                return f"Opening browser for '{url}' skipped by user."
+            raw_target = (args.get("url") or args.get("path") or args.get("file") or "").strip()
+            p = Path(os.path.expanduser(raw_target))
+            if not p.is_absolute():
+                p = (Path(os.getcwd()) / p).resolve()
+
+            if p.exists() and p.is_file():
+                target_url = p.as_uri()
+                display_label = str(p.relative_to(os.getcwd())) if str(p).startswith(os.getcwd()) else str(p)
+            elif raw_target.startswith(("http://", "https://", "file://")):
+                target_url = raw_target
+                display_label = target_url
+            elif raw_target.endswith((".html", ".htm", ".txt", ".py")):
+                target_url = (Path(os.getcwd()) / raw_target).resolve().as_uri()
+                display_label = raw_target
+            else:
+                target_url = "https://" + raw_target if not raw_target.startswith("www.") else "https://" + raw_target
+                display_label = target_url
+
+            print(f"\n{CYAN}🖥️  Launch Browser:{RESET} {BOLD}{display_label}{RESET} {GRAY}({target_url}){RESET}")
+            if not self.ask_permission(f"opening '{display_label}' in desktop browser"):
+                return f"Opening browser for '{display_label}' skipped by user."
             try:
-                webbrowser.open(url)
-                print(f"   {GREEN}✓ Opened in default web browser{RESET}")
-                return f"Successfully opened '{url}' in default browser."
+                # Prefer xdg-open on Linux for robust desktop launch on Wayland/Hyprland
+                if IS_LINUX and subprocess.run("which xdg-open", shell=True, capture_output=True).returncode == 0:
+                    subprocess.Popen(["xdg-open", target_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    webbrowser.open(target_url)
+                print(f"   {GREEN}✓ Opened '{display_label}' in default web browser{RESET}")
+                return f"Successfully opened '{display_label}' in default browser."
             except Exception as e:
                 return f"Error opening browser: {e}"
 
@@ -950,9 +983,30 @@ class Agent:
 
             print(" " * 30, end="\r")
             result = self.execute_tool(name, args)
+
+            # Construct dynamic next-step prompt to maintain chaining for 7B models
+            feedback = f"[Result of {name}]:\n{result}\n"
+            p_lower = user_prompt.lower()
+            if name in ("write_file", "edit_file"):
+                target_f = args.get("path", "")
+                if any(w in p_lower for w in ("open", "browser", "launch", "play", "view")) and (target_f.endswith((".html", ".htm")) or "html" in p_lower):
+                    feedback += f"The user requested to open/launch this file in the desktop browser. Invoke 'open_browser' now with args: {{\"url\": \"{target_f}\"}}."
+                elif any(w in p_lower for w in ("run", "test", "execute", "check")) and not any(w in p_lower for w in ("do not run", "don't run", "no run")):
+                    feedback += "The user requested to run or test the code. Invoke 'run_command' now to execute and verify."
+                else:
+                    feedback += "If the requested task is complete, provide your concise final response directly without calling any tools. Otherwise, proceed to the next necessary tool action."
+            elif name == "search_web":
+                feedback += "Web search results retrieved above. Proceed to implement the requested solution or create the file using write_file."
+            elif name == "fetch_web":
+                feedback += "Web page content retrieved above. Proceed with the next necessary tool action."
+            elif name == "open_browser":
+                feedback += "Browser launched successfully. If the requested task is complete, provide your concise final response directly without calling any tools."
+            else:
+                feedback += "If the requested task is complete, provide your concise final response directly without calling any tools. Otherwise, proceed to the next necessary tool action."
+
             self.history.append({
                 "role": "user",
-                "content": f"[Result of {name}]:\n{result}\nIf the requested task is complete, provide your concise final response directly without calling any tools. Otherwise, proceed to the next necessary tool action."
+                "content": feedback
             })
             step += 1
 
