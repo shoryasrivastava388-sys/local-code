@@ -5,14 +5,21 @@
 
 ---
 
-## ✨ Features
+> [!WARNING]
+> ### 🚧 Active Construction & Work-in-Progress (WIP)
+> This project is currently under active development. It is **specifically tuned and optimized for `qwen2.5-coder:7b`** (and local Ollama Qwen models). More features, benchmark evaluations, and multi-model tuning are actively being rolled out.
 
-- **💻 Full Computer Access:** Runs bash commands, creates files, applies targeted code patches, searches codebases, and checks git diffs.
-- **🌐 Live Web Browsing:** Fetches live documentation, GitHub repositories, and web articles via native `curl` extraction.
-- **⚡ Zero External Dependencies:** Pure Python standard library. No bloated frameworks, no slow dependency resolution.
-- **🧠 Action-First Persona:** Doesn't lecture you or explain basic programming syntax. Inspects the repo, does the work, runs tests, and delivers concise summaries.
-- **🔄 Autonomous Self-Healing:** If a test or command fails, it analyzes the stack trace, patches the file, and re-runs until it works.
-- **🏎️ Blazing Fast CPU/GPU Execution:** Bypasses sluggish GBNF grammar DFAs to generate tool calls at full native model speed.
+---
+
+## ✨ Key Features
+
+- **🌐 Live Web Search & Browsing:** Search the live internet (via DuckDuckGo Lite) and extract documentation/code snippets directly with native `curl`—zero API keys required.
+- **✏️ Surgical File Editing:** Inspects code and modifies targeted functions with colored unified diffs. Will **never** overwrite or recreate existing files unless asked.
+- **💻 Native Terminal Execution:** Runs test suites, builds, shell scripts, and git commands directly on your system.
+- **🛡️ Permission & Auto Modes:** Toggle between interactive approval mode (`[Y/n/a]`) and fully autonomous mode (`qc -y`).
+- **🖥️ Desktop Browser Control:** Launches URLs in your desktop browser (Firefox/Chrome) when requested.
+- **🧠 Action-First & Persistently Self-Healing:** Catches error traces, debugs broken code, patches files, and re-runs tests until they pass without lecturing you on basic syntax.
+- **⚡ Zero External Dependencies:** Pure Python standard library. No bloated frameworks or slow installs.
 
 ---
 
@@ -21,13 +28,13 @@
 ### Method 1: One-Line Installer (Recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/qwen-agent/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/shoryasrivastava388-sys/qwen-agent/main/install.sh | bash
 ```
 
 ### Method 2: Via Pip / uv
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/qwen-agent.git
+git clone https://github.com/shoryasrivastava388-sys/qwen-agent.git
 cd qwen-agent
 pip install -e .
 ```
@@ -55,44 +62,62 @@ ollama run qwen2.5-coder:7b
 
 ### Interactive Mode
 
-Simply run `qc` (or `qwen-agent`) in any repository:
+Simply run `qc` (or `qwen-agent`) in any project directory:
 
 ```bash
 qc
 ```
 
-To auto-approve commands without interactive confirmation prompts:
+To run in **Auto Mode** (auto-approve all actions):
 ```bash
 qc -y
 ```
 
 ### Non-Interactive / One-Shot Mode
 
-Run a single command directly from your shell:
+Run single tasks directly from your shell:
 
 ```bash
-qc -y "Find all deprecated function calls in src/ and patch them."
+qc -y "Search the web for how to write a FastAPI WebSocket endpoint and implement it in server.py"
 ```
 
 ```bash
-qc -y "Browse https://github.com/fastapi/fastapi and tell me what the latest release changes are."
+qc -y "Run pytest, inspect failing tests, and patch the codebase until all tests pass."
 ```
 
 ---
 
-## 🧰 Available Tools
+## 💬 Interactive Slash Commands
+
+Inside interactive chat:
+
+| Command | Description |
+|---|---|
+| `/auto` or `/perm` | Toggle between Permission Mode and Auto-Approve Mode |
+| `/diff` | Display colored git diff of current uncommitted changes |
+| `/undo` | Discard recent uncommitted working tree changes (`git checkout .`) |
+| `/search <query>` | Perform an instant live web search directly from terminal |
+| `/models` | List all local Ollama models installed on the machine |
+| `/model <name>` | Switch active model on the fly (e.g. `/model qwen2.5-coder:14b`) |
+| `/clear` | Reset context memory and start fresh |
+| `exit` / `quit` | Exit session |
+
+---
+
+## 🧰 Available Autonomous Tools
 
 | Tool | Description |
 |---|---|
-| `run_command` | Execute bash commands, test suites, builds, and scripts |
+| `search_web` | Search live web for docs, errors, and packages (DuckDuckGo Lite) |
+| `fetch_web` | Scrape and extract clean text from any URL or GitHub repo |
+| `edit_file` | Surgical search-and-replace code editing with unified diff display |
 | `read_file` | Read file contents with line offset and count support |
-| `write_file` | Create or overwrite files |
-| `patch_file` | Surgical search-and-replace code refactoring |
+| `write_file` | Create brand new files on disk |
+| `run_command` | Execute bash commands, builds, test suites, and scripts |
 | `list_dir` | Recursive directory tree inspection |
 | `search_code` | Codebase-wide regex / keyword search (`ripgrep` / `grep`) |
 | `git_diff` | Inspect git status and working tree diffs |
-| `fetch_web` | Fetch and extract clean text from any URL |
-| `open_browser` | Launch a URL in the desktop web browser |
+| `open_browser` | Open URLs in the user's desktop web browser |
 
 ---
 
@@ -107,22 +132,12 @@ positional arguments:
 options:
   -h, --help            Show this help message and exit
   -m, --model MODEL     Ollama model (default: qwen2.5-coder:7b)
-  -y, --yes             Auto-approve terminal execution
-  -c, --context CONTEXT Context size in tokens (default: 4096)
+  -y, --yes             Auto-approve all actions (Auto Mode)
+  -c, --context CONTEXT Context window size in tokens (default: 4096)
   -t, --temp TEMP       Sampling temperature (default: 0.2)
   --host HOST           Ollama API base URL (default: http://127.0.0.1:11434)
   -v, --version         Show program's version number and exit
 ```
-
----
-
-## 📜 In-Chat Commands
-
-While in interactive mode:
-- `/auto` — Toggle terminal command auto-approval on/off
-- `/clear` — Clear context history and start fresh
-- `/help` — Display in-chat options
-- `exit` or `quit` — Exit agent
 
 ---
 

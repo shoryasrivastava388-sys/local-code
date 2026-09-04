@@ -4,7 +4,7 @@ set -e
 INSTALL_DIR="${HOME}/.local/bin"
 mkdir -p "${INSTALL_DIR}"
 
-SCRIPT_URL="https://raw.githubusercontent.com/${GITHUB_REPO:-kushagra/qwen-agent}/main/qwen_agent.py"
+SCRIPT_URL="https://raw.githubusercontent.com/shoryasrivastava388-sys/qwen-agent/main/qwen_agent.py"
 TARGET="${INSTALL_DIR}/qwen-agent"
 
 echo "→ Installing qwen-agent to ${INSTALL_DIR}..."
@@ -27,4 +27,4 @@ echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
 echo ""
 echo "Usage:"
 echo "  qc                 # Interactive mode"
-echo "  qc -y 'Fix bug'    # Auto-approve mode"
+echo "  qc -y 'Task'       # Auto-approve mode"
