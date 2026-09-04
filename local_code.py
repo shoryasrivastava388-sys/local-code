@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.5.3"
+__version__ = "1.5.4"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -405,18 +405,35 @@ def validate_code(path, content):
     # 1. HTML / DOM checks
     if p_str.endswith((".html", ".htm")):
         content_lower = content.lower()
-        if not ("<html" in content_lower or "<!doctype" in content_lower or "<body" in content_lower):
+        if not ("<html" in content_lower or "<!doctype" in content_lower):
             issues.append(
-                "Incomplete HTML Document: The file is missing <!DOCTYPE html>, <html>, or <body> tags. "
+                "Incomplete HTML Document: The file is missing <!DOCTYPE html> or <html> tags. "
                 "Ensure the file is a complete HTML document or use 'edit_file' to surgically replace targeted functions."
             )
-        if "<head>" in content_lower and "</head>" in content_lower:
-            head_part = re.split(r"</head>", content, flags=re.IGNORECASE)[0].lower()
-            if "<script" in head_part:
-                if any(dom in head_part for dom in ("document.body", "document.getelementbyid", "document.queryselector")):
-                    if not any(safe in head_part for safe in ("domcontentloaded", "window.onload", "onload", "defer")):
+        if "<head>" in content_lower and "</head>" not in content_lower:
+            issues.append("Malformed HTML: <head> tag is opened but never closed with </head>.")
+        if "<body" not in content_lower:
+            issues.append("Malformed HTML: Document is missing <body> opening tag.")
+
+        # Trailing garbage/commentary check after </html>
+        if "</html>" in content_lower:
+            after_html = re.split(r"</html>", content, flags=re.IGNORECASE)[-1].strip()
+            if after_html:
+                issues.append(
+                    f"Corrupted HTML Document: Found {len(after_html)} characters of leaked text, backticks, or commentary after </html>. "
+                    "Ensure </html> is the absolute end of the file."
+                )
+
+        # DOM Lifecycle Bug check: script before <body> accessing document.body
+        body_idx = content_lower.find("<body")
+        for sc_match in re.finditer(r"<script(?:\s+[^>]*)?>([\s\S]*?)</script>", content, flags=re.IGNORECASE):
+            sc_pos = sc_match.start()
+            sc_code = sc_match.group(1).lower()
+            if body_idx == -1 or sc_pos < body_idx:
+                if any(dom in sc_code for dom in ("document.body", "document.getelementbyid", "document.queryselector")):
+                    if not any(safe in sc_code for safe in ("domcontentloaded", "window.onload", "onload", "defer")):
                         issues.append(
-                            "DOM Lifecycle Bug: <script> executes in <head> and accesses document.body before the body exists. "
+                            "DOM Lifecycle Bug: <script> executes before <body> exists and accesses document.body. "
                             "Wrap your script in window.addEventListener('DOMContentLoaded', () => { ... }) or move <script> inside <body>."
                         )
 
@@ -1518,16 +1535,19 @@ class Agent:
                     for iss in issues:
                         print(f"   {RED}• {iss}{RESET}")
                 else:
-                    if cand.suffix.lower() in (".html", ".htm") and has_open_word:
+                    is_edit_or_fix = bool(re.search(r"\b(?:fix|repair|debug|solve|unbug|bug|broken|issue|inspect|search|edit|modify|update|upgrade|refactor|change|make|improve|pull\s+out|give\s+me)\b", user_prompt, re.IGNORECASE))
+                    is_launch_only = any(w in user_prompt.lower() for w in ("open", "browser", "launch", "play", "view", "test")) and not is_edit_or_fix
+
+                    if cand.suffix.lower() in (".html", ".htm") and is_launch_only:
                         print(f"\n{GREEN}✓ Pre-flight diagnostic check: '{cand.name}' has 0 errors.{RESET}")
                         self.execute_tool("open_browser", {"url": cand.name}, user_prompt=user_prompt)
                         self.history.append({"role": "user", "content": user_prompt})
                         self.history.append({"role": "assistant", "content": f"Inspected '{cand.name}' (0 diagnostic errors) and opened in your desktop web browser."})
                         return
-                    elif has_fix_word:
+                    elif has_fix_word or is_edit_or_fix:
                         user_prompt += (
                             f"\n\n[Target File: {cand.name} - 0 Diagnostic Errors Detected]\n"
-                            f"The file '{cand.name}' is valid with 0 diagnostic issues. If making enhancements, use 'edit_file'. Do NOT rewrite complete working files."
+                            f"The file '{cand.name}' is valid with 0 diagnostic issues. If making enhancements or inspecting code, use 'read_file' or 'edit_file'. Do NOT rewrite complete working files."
                         )
             except Exception:
                 pass
