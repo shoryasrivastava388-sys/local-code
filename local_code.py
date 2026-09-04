@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.5.1"
+__version__ = "1.5.2"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -97,10 +97,11 @@ The tools are:
   args: `{"path": "filepath.html"}`
 
 ## Core Operational Directives
-1. ALWAYS SAVE CODE TO FILES (NEVER DUMP CODE IN CHAT):
-   - You are an autonomous software engineering CLI tool running directly on the user's disk, NOT a web chatbot.
-   - NEVER output full code or scripts into the chat with ```python, ```javascript, ```html, etc.!
-   - Whenever the user asks to write, implement, create, produce, or build a script, tool, CLI, or application (even if they say "act as a programmer" or "produce the complete python code"), you MUST execute `write_file` to save the code directly to a file on disk.
+1. ABSOLUTELY ZERO CODE DUMPING IN CHAT:
+   - You are an autonomous software engineering agent with DIRECT SYSTEM EXECUTION TOOLS, NOT a web chatbot.
+   - NEVER output markdown code blocks (```html, ```python, ```javascript, ```css, etc.) or raw scripts into the chat!
+   - Writing code blocks in chat is strictly forbidden. You must ALWAYS invoke {"name": "write_file", ...} or {"name": "edit_file", ...}.
+   - If the user asks you to open, test, debug, or fix an already working file that has 0 errors, DO NOT rewrite it! Invoke {"name": "open_browser", "arguments": {"url": "..."}} immediately.
    - If the user did not specify an exact filename, choose an appropriate standard filename (e.g. `rate_limiter.py`, `app.py`, `main.py`, `index.html`) and invoke `write_file`.
 2. FILE EDITING vs CREATION:
    - When modifying an existing file, NEVER rewrite or recreate the file with `write_file`.
@@ -1120,9 +1121,8 @@ class Agent:
 
         # 4. Agentic Fallback: Model produced a raw code block instead of JSON!
         # Automatically convert it into a write_file action so code is saved to disk immediately.
-        if step <= 2:
-            code_blocks = re.findall(r"```([a-zA-Z0-9_-]+)?\s*\n(.*?)```", text, flags=re.DOTALL)
-            for lang, code in code_blocks:
+        code_blocks = re.findall(r"```([a-zA-Z0-9_-]+)?\s*\n(.*?)```", text, flags=re.DOTALL)
+        for lang, code in code_blocks:
                 code = code.strip()
                 if code.count("\n") >= 2 and not (code.startswith("{") and code.endswith("}")):
                     ext_map = {
@@ -1253,14 +1253,17 @@ class Agent:
                     if (
                         accumulated.strip().startswith("```")
                         or accumulated.strip().startswith("{")
-                        or "```json" in accumulated
+                        or "```" in accumulated
                         or '{"name"' in accumulated
                         or '{"name":' in accumulated
                     ):
                         in_tool_block = True
 
                     if in_tool_block:
-                        sys.stdout.write(f"\r{CYAN}⚡ [Step {step}] Generating action... ({token_count} tokens){RESET}\033[K")
+                        if printed_prefix:
+                            sys.stdout.write(f"\r\033[K")
+                            printed_prefix = False
+                        sys.stdout.write(f"\r{CYAN}⚡ [Step {step}] Writing code directly to disk... ({token_count} tokens){RESET}\033[K")
                         sys.stdout.flush()
 
                         # Repetition loop detector: if a phrase repeats 3+ times in the tail, break immediately
@@ -1434,10 +1437,18 @@ class Agent:
                         for iss in issues:
                             print(f"   {RED}• {iss}{RESET}")
                     else:
-                        user_prompt += (
-                            f"\n\n[Target File: {cand.name}]\n"
-                            f"Instructions: Use read_file to inspect {cand.name}, identify the reported bug or issue, and use edit_file to resolve it."
-                        )
+                        if any(w in user_prompt.lower() for w in ("open", "browser", "launch", "play", "view", "test")):
+                            user_prompt += (
+                                f"\n\n[Target File: {cand.name} - 0 Diagnostic Errors Detected]\n"
+                                f"The file '{cand.name}' is verified with 0 errors on disk. "
+                                f"DO NOT rewrite the file. DO NOT output code blocks in chat. "
+                                f"Invoke 'open_browser' now with args: {{\"url\": \"{cand.name}\"}} to open and test it."
+                            )
+                        else:
+                            user_prompt += (
+                                f"\n\n[Target File: {cand.name} - 0 Diagnostic Errors Detected]\n"
+                                f"The file '{cand.name}' is valid with 0 diagnostic issues. If making enhancements, use 'edit_file'. Do NOT rewrite complete working files."
+                            )
                 except Exception:
                     pass
 
@@ -1522,9 +1533,13 @@ class Agent:
                         + f"\nYou MUST invoke 'edit_file' now with the exact target code snippet to fix these issues. Do NOT stop or summarize without editing."
                     )
                 elif any(w in p_lower for w in ("open", "browser", "launch", "play", "view", "test")) and (target_f.endswith((".html", ".htm")) or "html" in p_lower):
-                    feedback += f"File '{target_f}' has been inspected and has 0 diagnostic errors. Invoke 'open_browser' now with args: {{\"url\": \"{target_f}\"}} to test and preview the application in the desktop browser."
+                    feedback += (
+                        f"File '{target_f}' has been inspected and verified with 0 diagnostic errors. The file is already complete on disk. "
+                        f"DO NOT rewrite the file. DO NOT output code blocks in chat. "
+                        f"Invoke 'open_browser' now with args: {{\"url\": \"{target_f}\"}} to open and preview it in the desktop browser."
+                    )
                 elif any(w in p_lower for w in ("fix", "repair", "debug", "solve", "bug")):
-                    feedback += f"File '{target_f}' has been read (0 diagnostic errors). If there are specific bugs reported by the user, invoke 'edit_file' with the exact target snippet. If the code is already functioning correctly, invoke 'open_browser' with args: {{\"url\": \"{target_f}\"}} to verify it."
+                    feedback += f"File '{target_f}' has been read (0 diagnostic errors). If there are specific bugs reported by the user, invoke 'edit_file' with the exact target snippet. If the code is already functioning correctly, invoke 'open_browser' with args: {{\"url\": \"{target_f}\"}} to verify it. Do NOT rewrite working files."
                 else:
                     feedback += f"File '{target_f}' read successfully. Proceed with the necessary modification via edit_file or command execution."
             elif name in ("write_file", "edit_file"):
