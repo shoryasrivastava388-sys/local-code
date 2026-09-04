@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.4.7"
+__version__ = "1.4.8"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -402,6 +402,11 @@ def validate_code(path, content):
     # 1. HTML / DOM checks
     if p_str.endswith((".html", ".htm")):
         content_lower = content.lower()
+        if not ("<html" in content_lower or "<!doctype" in content_lower or "<body" in content_lower):
+            issues.append(
+                "Incomplete HTML Document: The file is missing <!DOCTYPE html>, <html>, or <body> tags. "
+                "Ensure the file is a complete HTML document or use 'edit_file' to surgically replace targeted functions."
+            )
         if "<head>" in content_lower and "</head>" in content_lower:
             head_part = re.split(r"</head>", content, flags=re.IGNORECASE)[0].lower()
             if "<script" in head_part:
@@ -411,6 +416,60 @@ def validate_code(path, content):
                             "DOM Lifecycle Bug: <script> executes in <head> and accesses document.body before the body exists. "
                             "Wrap your script in window.addEventListener('DOMContentLoaded', () => { ... }) or move <script> inside <body>."
                         )
+
+        # Sandboxed Node VM runtime verification for embedded <script> tags
+        if subprocess.run("which node", shell=True, capture_output=True).returncode == 0:
+            scripts = re.findall(r"<script(?:\s+[^>]*)?>([\s\S]*?)</script>", content, flags=re.IGNORECASE)
+            for sc in scripts:
+                sc_clean = sc.strip()
+                if not sc_clean:
+                    continue
+                node_runner = (
+                    "const vm = require('vm');\n"
+                    "const mockElem = {\n"
+                    "  getContext: () => ({\n"
+                    "    fillRect: () => {}, clearRect: () => {}, fillText: () => {}, strokeRect: () => {},\n"
+                    "    beginPath: () => {}, arc: () => {}, fill: () => {}, stroke: () => {}\n"
+                    "  }),\n"
+                    "  appendChild: () => {}, addEventListener: () => {}, style: {},\n"
+                    "  width: 400, height: 400\n"
+                    "};\n"
+                    "const sandbox = {\n"
+                    "  window: { innerWidth: 800, innerHeight: 600, addEventListener: () => {}, location: { reload: () => {} } },\n"
+                    "  document: {\n"
+                    "    createElement: () => mockElem, getElementById: () => mockElem, querySelector: () => mockElem,\n"
+                    "    addEventListener: () => {}, body: mockElem\n"
+                    "  },\n"
+                    "  console: { log: () => {}, error: () => {}, warn: () => {} },\n"
+                    "  setTimeout: () => {}, setInterval: () => {}, requestAnimationFrame: () => {},\n"
+                    "  alert: () => {}, Math: Math,\n"
+                    "  localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },\n"
+                    "  sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} }\n"
+                    "};\n"
+                    "sandbox.window.localStorage = sandbox.localStorage;\n"
+                    "sandbox.window.sessionStorage = sandbox.sessionStorage;\n"
+                    "sandbox.window.document = sandbox.document;\n"
+                    "vm.createContext(sandbox);\n"
+                    "try {\n"
+                    "  vm.runInContext(process.env.TEST_CODE, sandbox, { timeout: 2000 });\n"
+                    "} catch (err) {\n"
+                    "  console.error(err.name + ': ' + err.message);\n"
+                    "  process.exit(1);\n"
+                    "}\n"
+                )
+                try:
+                    res = subprocess.run(
+                        ["node", "-e", node_runner],
+                        env={**os.environ, "TEST_CODE": sc_clean},
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if res.returncode != 0 and res.stderr.strip():
+                        err_line = res.stderr.strip().splitlines()[0]
+                        issues.append(f"Script Runtime/Syntax Error: {err_line}")
+                except Exception:
+                    pass
 
     # 2. Python syntax checks
     elif p_str.endswith(".py"):
@@ -534,6 +593,46 @@ class Agent:
                 target_url = "https://" + raw_target if not raw_target.startswith("www.") else "https://" + raw_target
                 display_label = target_url
 
+            # Automated Headless Pre-flight Browser Verification for local HTML apps
+            if p.exists() and p.is_file() and p.suffix.lower() in (".html", ".htm"):
+                print(f"   {GRAY}Testing web page in headless browser first...{RESET}")
+                content = p.read_text(encoding="utf-8", errors="replace")
+                pre_issues = validate_code(display_label, content)
+                if pre_issues:
+                    print(f"   {YELLOW}⚠️  Pre-flight verification failed for '{display_label}':{RESET}")
+                    for iss in pre_issues:
+                        print(f"      {RED}• {iss}{RESET}")
+                    return (
+                        f"Pre-flight browser test FAILED for '{display_label}'. Do not launch broken code to the user.\n"
+                        + "\n".join(f"- {iss}" for iss in pre_issues)
+                        + f"\nCRITICAL: You MUST invoke edit_file immediately to fix these issues before launching the browser."
+                    )
+
+                # Headless render verification with Firefox
+                if subprocess.run("which firefox", shell=True, capture_output=True).returncode == 0:
+                    import tempfile
+                    import shutil
+                    temp_prof = tempfile.mkdtemp(prefix="lc_ff_")
+                    temp_shot = Path(tempfile.gettempdir()) / f"lc_test_{p.stem}.png"
+                    try:
+                        ff_cmd = [
+                            "firefox", "--headless", "--no-remote",
+                            "--profile", temp_prof,
+                            "--screenshot", str(temp_shot),
+                            target_url
+                        ]
+                        subprocess.run(ff_cmd, capture_output=True, text=True, timeout=8)
+                        if temp_shot.exists() and temp_shot.stat().st_size > 0:
+                            print(f"   {GREEN}✓ Headless browser test passed (clean render verified){RESET}")
+                            try:
+                                temp_shot.unlink()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    finally:
+                        shutil.rmtree(temp_prof, ignore_errors=True)
+
             print(f"\n{CYAN}🖥️  Launch Browser:{RESET} {BOLD}{display_label}{RESET} {GRAY}({target_url}){RESET}")
             if not self.ask_permission(f"opening '{display_label}' in desktop browser"):
                 return f"Opening browser for '{display_label}' skipped by user."
@@ -618,6 +717,15 @@ class Agent:
             except ValueError:
                 pass
             print(f"\n{GREEN}💾 {label}:{RESET} {BOLD}{display_path}{RESET} {GRAY}({len(content)} bytes){RESET}")
+            # Guard against accidentally wiping an existing file with a snippet:
+            if not is_new and p.is_file():
+                p_suffix = p.suffix.lower()
+                if p_suffix in (".html", ".htm") and not ("<html" in content.lower() or "<!doctype" in content.lower()):
+                    return (
+                        f"Action rejected: Cannot overwrite existing full HTML file '{display_path}' with a code snippet. "
+                        f"To modify an existing file, invoke 'edit_file' with 'target' and 'replacement'. "
+                        f"If replacing the entire file, provide the full <!DOCTYPE html> document."
+                    )
             if not self.ask_permission(f"{label.lower()} '{display_path}'"):
                 return f"Writing '{display_path}' skipped by user."
             try:
@@ -931,6 +1039,17 @@ class Agent:
                             if fld.lower() in ("downloads", "desktop", "documents", "code", "projects", "tmp") or fld.startswith(("~", "./", "/")):
                                 filename = f"{fld}/{filename}"
 
+                    # Safety check: If file already exists on disk, NEVER overwrite it with a snippet fallback!
+                    if filename:
+                        target_p = Path(os.path.expanduser(filename))
+                        if not target_p.is_absolute():
+                            target_p = (Path(os.getcwd()) / target_p).resolve()
+                        if target_p.is_file():
+                            if target_p.suffix.lower() in (".html", ".htm") and not ("<html" in code.lower() or "<!doctype" in code.lower()):
+                                continue
+                            if any(w in user_prompt.lower() for w in ("edit", "fix", "unbug", "repair", "debug", "patch")):
+                                continue
+
                     return "write_file", {"path": filename, "content": code}, True
 
         return None, None, False
@@ -1163,12 +1282,15 @@ class Agent:
             return
 
         # Automated Pre-Execution Diagnostic Hook for bug fix requests
-        fix_match = re.search(r"\b(?:fix|repair|debug|solve)\b.*?\b([~./\w-]+\.(?:html?|py|js|sh))\b", user_prompt, re.IGNORECASE)
-        if fix_match:
-            cand = Path(os.path.expanduser(fix_match.group(1)))
+        fix_match = None
+        cand_match = re.search(r"\b([~./\w-]+\.(?:html?|py|js|sh))\b", user_prompt, re.IGNORECASE)
+        has_fix_word = bool(re.search(r"\b(?:fix|repair|debug|solve|unbug|bug|broken|issue)\b", user_prompt, re.IGNORECASE))
+        if cand_match and has_fix_word:
+            cand = Path(os.path.expanduser(cand_match.group(1)))
             if not cand.is_absolute():
                 cand = (Path(os.getcwd()) / cand).resolve()
             if cand.is_file():
+                fix_match = cand_match
                 try:
                     f_content = cand.read_text(encoding="utf-8", errors="replace")
                     issues = validate_code(str(cand), f_content)
