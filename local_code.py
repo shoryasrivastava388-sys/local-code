@@ -19,7 +19,7 @@ import json
 import os
 import platform
 import re
-import signal
+import random
 import subprocess
 import sys
 import threading
@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.4.4"
+__version__ = "1.4.5"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -839,11 +839,12 @@ class Agent:
 
         return None, None, False
 
-    def stream_turn(self, step=1, user_prompt=""):
+    def stream_turn(self, step=1, user_prompt="", messages=None, spinner_label=None):
         num_threads = min(os.cpu_count() or 4, 4)
+        msgs = messages if messages is not None else self.history
         payload = {
             "model": self.model,
-            "messages": self.history,
+            "messages": msgs,
             "stream": True,
             "options": {
                 "num_ctx": self.context,
@@ -870,13 +871,14 @@ class Agent:
         # Background animated spinner while CPU is prefilling / evaluating prompt
         stop_spinner = threading.Event()
         start_time = time.time()
+        label = spinner_label or ("Planning actions & tools..." if step == 1 else "Thinking & evaluating prompt...")
 
         def spin():
             spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
             i = 0
             while not stop_spinner.is_set():
                 elapsed = int(time.time() - start_time)
-                sys.stdout.write(f"\r{DIM}{spinner_frames[i % len(spinner_frames)]} [Step {step}] Thinking & evaluating prompt... ({elapsed}s){RESET}\033[K")
+                sys.stdout.write(f"\r{DIM}{spinner_frames[i % len(spinner_frames)]} [Step {step}] {label} ({elapsed}s){RESET}\033[K")
                 sys.stdout.flush()
                 i += 1
                 time.sleep(0.1)
@@ -961,14 +963,119 @@ class Agent:
         finally:
             stop_spinner.set()
 
+    def get_fast_path_reply(self, prompt):
+        """Instant (<1ms) response for conversational greetings, courtesy, gratitude, and identity.
+        Bypasses local LLM inference entirely to prevent unnecessary CPU load and latency."""
+        p = prompt.strip().lower()
+        words = set(re.findall(r"[a-z0-9_.-]+", p))
+        action_words = {
+            "write", "create", "make", "build", "code", "script", "file", "edit",
+            "patch", "update", "fix", "debug", "run", "test", "exec", "search",
+            "find", "browser", "open", "git", "install", "generate", "implement",
+            "check", "delete", "remove", "add", "show", "list", "read", "view",
+            "save", "download", "clone", "push", "pull", "commit"
+        }
+        # If any actionable coding word or file extension is present, delegate to full engine
+        if any(w in action_words for w in words) or any(w.endswith((".py", ".js", ".html", ".css", ".sh", ".json", ".rs", ".go", ".cpp", ".c")) for w in words):
+            return None
+
+        # Greetings
+        if re.match(r"^(?:hi|hello|hey|yo|sup|howdy|hola|greetings|good\s+(?:morning|afternoon|evening|day))[!.\s]*$", p):
+            return random.choice([
+                "Hello! What are we building or working on today?",
+                "Hey! Ready to code. What would you like to create, edit, or test?",
+                "Hi there! What project or coding task are we tackling today?"
+            ])
+
+        # Status / Courtesy
+        if re.match(r"^(?:how\s+are\s+you|how\s+is\s+it\s+going|what(?:\x27s|\s+is)\s+up|wassup)[!.\s\?]*$", p):
+            return "Running fast and ready to help! What can I build, search, or fix for you?"
+
+        # Gratitude
+        if re.search(r"\b(?:thanks(?:\s+a\s+lot)?|thank\s+you(?:\s+so\s+much)?|thx|cheers|ty|appreciate\s+it)\b", p):
+            return "You're very welcome! Let me know if you need anything else."
+
+        # Closings
+        if re.match(r"^(?:bye|goodbye|cya|see\s+ya|have\s+a\s+good\s+(?:day|one))[!.\s]*$", p):
+            return "Goodbye! Happy coding, and see you next time."
+
+        # Identity & Capabilities
+        if re.match(r"^(?:who\s+are\s+you|what\s+are\s+you|what\s+is\s+local-?code|what\s+is\s+lc|what\s+can\s+you\s+do|what\s+tools\s+do\s+you\s+have|help)[!.\s\?]*$", p):
+            return (
+                f"I'm {BOLD}local-code{RESET} ({CYAN}lc{RESET}), an autonomous local AI coding assistant running directly on your system with Ollama ({self.model}).\n\n"
+                f"Capabilities:\n"
+                f"  • {CYAN}🔍 Web Research:{RESET} Search the live web and inspect documentation\n"
+                f"  • {GREEN}💾 File Operations:{RESET} Create and surgically edit files with colored diffs\n"
+                f"  • {YELLOW}⚡ Shell Execution:{RESET} Run commands, test suites, and package managers\n"
+                f"  • {CYAN}🖥️ Browser Launch:{RESET} Open web apps & HTML files in your desktop browser\n"
+                f"  • {GREEN}🌿 Git Integration:{RESET} Inspect status, uncommitted diffs, and repository state\n\n"
+                f"What would you like to work on?"
+            )
+
+        return None
+
+    def is_pure_explanation(self, prompt):
+        """Detects whether a prompt is purely asking for explanation or knowledge
+        without requiring file modifications, command executions, or tools."""
+        p = prompt.strip().lower()
+        words = set(re.findall(r"[a-z0-9_.-]+", p))
+        action_words = {
+            "file", "files", "save", "write", "create", "make", "edit", "run",
+            "browser", "search", "git", "install", "delete", "download", "push", "pull"
+        }
+        if any(w in action_words for w in words) or any(w.endswith((".py", ".js", ".html", ".css", ".sh", ".json", ".rs", ".go", ".cpp", ".c")) for w in words):
+            return False
+
+        starters = [
+            r"^(?:what\s+is|what\s+are|what\s+does)\b",
+            r"^(?:why\s+is|why\s+are|why\s+does|why\s+do)\b",
+            r"^(?:how\s+does|how\s+do|how\s+can\s+i|how\s+to)\b",
+            r"^(?:explain|describe|clarify|tell\s+me\s+about)\b",
+            r"^(?:difference\s+between|compare)\b",
+        ]
+        return any(re.search(q, p) for q in starters)
+
     def run(self, user_prompt, max_steps=20):
         # Sanitize pasted escape sequences from terminals (e.g. ^[E or \x1b[E)
-        user_prompt = re.sub(r'(\x1b\[E|\^[E])', '\n', user_prompt)
+        user_prompt = re.sub(r'(\x1b\[E|\^[E])', '\n', user_prompt).strip()
+        if not user_prompt:
+            return
+
+        # Tier 1: Instant Fast-Path (0 ms response for greetings, courtesy, closures, identity)
+        fast_reply = self.get_fast_path_reply(user_prompt)
+        if fast_reply:
+            print(f"\n{BOLD}{CYAN}Qwen:{RESET} {fast_reply}\n")
+            self.history.append({"role": "user", "content": user_prompt})
+            self.history.append({"role": "assistant", "content": fast_reply})
+            return
+
+        # Tier 2: Fast Conversational / Technical Explanation (no tool schema overhead)
+        if self.is_pure_explanation(user_prompt):
+            self.history.append({"role": "user", "content": user_prompt})
+            temp_history = list(self.history)
+            temp_history[0] = {
+                "role": "system",
+                "content": (
+                    "You are local-code (lc), an expert AI software engineering assistant. "
+                    "Answer the user's technical question directly, clearly, and concisely without invoking any tools. "
+                    "Provide clear code snippets inside markdown blocks if helpful."
+                )
+            }
+            res = self.stream_turn(step=1, user_prompt=user_prompt, messages=temp_history, spinner_label="Formulating explanation...")
+            if res:
+                self.history.append({"role": "assistant", "content": res})
+            return
+
+        # Tier 3: Full Autonomous Tool Agent
         self.history.append({"role": "user", "content": user_prompt})
         step = 1
 
         while step <= max_steps:
-            res = self.stream_turn(step=step, user_prompt=user_prompt)
+            res = self.stream_turn(
+                step=step,
+                user_prompt=user_prompt,
+                spinner_label="Planning actions & tools..." if step == 1 else "Formulating next step..."
+            )
             if not res:
                 break
 
