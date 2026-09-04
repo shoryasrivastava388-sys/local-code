@@ -751,13 +751,13 @@ class Agent:
                     if c_str.strip():
                         return "write_file", {"path": p_str, "content": c_str.strip()}, True
 
-        # 4. Agentic Fallback: Model produced a raw code block on Step 1 instead of JSON!
+        # 4. Agentic Fallback: Model produced a raw code block instead of JSON!
         # Automatically convert it into a write_file action so code is saved to disk immediately.
-        if step == 1:
+        if step <= 2:
             code_blocks = re.findall(r"```([a-zA-Z0-9_-]+)?\s*\n(.*?)```", text, flags=re.DOTALL)
             for lang, code in code_blocks:
                 code = code.strip()
-                if code.count("\n") >= 8 and not (code.startswith("{") and code.endswith("}")):
+                if code.count("\n") >= 2 and not (code.startswith("{") and code.endswith("}")):
                     ext_map = {
                         "python": ".py", "py": ".py",
                         "javascript": ".js", "js": ".js",
