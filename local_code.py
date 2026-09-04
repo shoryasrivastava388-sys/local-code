@@ -706,7 +706,7 @@ class Agent:
 
         return None, None, False
 
-    def stream_turn(self, step=1):
+    def stream_turn(self, step=1, user_prompt=""):
         num_threads = min(os.cpu_count() or 4, 4)
         payload = {
             "model": self.model,
@@ -714,8 +714,10 @@ class Agent:
             "stream": True,
             "options": {
                 "num_ctx": self.context,
+                "num_predict": min(self.context, 2048),
                 "temperature": self.temp,
-                "num_thread": num_threads
+                "num_thread": num_threads,
+                "stop": ["<|im_end|>", "<|endoftext|>"]
             }
         }
         url = f"{self.host}/api/chat"
@@ -749,6 +751,16 @@ class Agent:
                     if in_tool_block:
                         sys.stdout.write(f"\r{CYAN}⚡ [Step {step}] Generating action... ({token_count} tokens){RESET}\033[K")
                         sys.stdout.flush()
+
+                        # Early stop: break immediately as soon as a complete tool call or code block is formed
+                        if re.search(r"```[a-zA-Z0-9_-]*\s*\n.+?\n```", accumulated, flags=re.DOTALL):
+                            _, _, valid = self.extract_tool_call(accumulated, user_prompt=user_prompt, step=step)
+                            if valid:
+                                break
+                        elif '{"name"' in accumulated or '{"name":' in accumulated:
+                            _, _, valid = self.extract_tool_call(accumulated, user_prompt=user_prompt, step=step)
+                            if valid:
+                                break
                     else:
                         if not printed_prefix and accumulated.strip():
                             sys.stdout.write(f"\r\033[K\n{BOLD}{CYAN}Qwen:{RESET} ")
@@ -776,7 +788,7 @@ class Agent:
 
         while step <= max_steps:
             print(f"{DIM}[Step {step}] Thinking...{RESET}", end="\r", flush=True)
-            res = self.stream_turn(step=step)
+            res = self.stream_turn(step=step, user_prompt=user_prompt)
             if not res:
                 break
 
@@ -940,6 +952,11 @@ def main():
   {CYAN}exit / quit{RESET}    Exit session
 """)
             continue
+
+        clean_input = user_input.strip()
+        cmd_prefix = re.match(r'^(?:lc|local-code|qc)\s+["\']?(.*?)["\']?$', clean_input, flags=re.DOTALL)
+        if cmd_prefix:
+            user_input = cmd_prefix.group(1).strip()
 
         agent.run(user_input)
         print()
