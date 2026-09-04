@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """
 qwen-agent (qc) - Cross-Platform Autonomous Local AI Engineer powered by Ollama.
-Works seamlessly on Linux, macOS, and Windows.
-Engineered for Qwen2.5-Coder (with support for any local LLM).
+Features:
+- Interactive arrow-key menu selectors for model switching (/models) and permissions
+- Search the web (DuckDuckGo Lite) and fetch documentation
+- Surgical file editing with colored diffs (no recreating existing files)
+- Terminal execution with Permission Mode & Auto Mode
+- Desktop browser launcher
+- In-chat slash commands (/diff, /undo, /search, /model, /auto)
+- Self-healing autonomous task execution
 """
 
 import argparse
@@ -22,7 +28,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -48,6 +54,8 @@ BLUE = "\033[34m"
 MAGENTA = "\033[35m"
 RED = "\033[31m"
 GRAY = "\033[90m"
+HIDE_CURSOR = "\033[?25l"
+SHOW_CURSOR = "\033[?25h"
 
 SYSTEM_PROMPT_TEMPLATE = """You are an elite, autonomous software engineering agent operating directly on the local machine.
 Host OS: {os_name}
@@ -101,19 +109,173 @@ def get_system_prompt():
     return SYSTEM_PROMPT_TEMPLATE.replace("{os_name}", OS_NAME)
 
 
+def read_single_key():
+    """Cross-platform key reader that supports arrow keys and single keypresses."""
+    if not sys.stdin.isatty():
+        return None
+
+    if IS_WINDOWS:
+        try:
+            import msvcrt
+            ch = msvcrt.getwch()
+            if ch in ('\x00', '\xe0'):
+                ch2 = msvcrt.getwch()
+                if ch2 == 'H': return 'up'
+                if ch2 == 'P': return 'down'
+                if ch2 == 'K': return 'left'
+                if ch2 == 'M': return 'right'
+                return 'special'
+            if ch in ('\r', '\n'): return 'enter'
+            if ch == '\x1b': return 'esc'
+            if ch == '\x03': return 'ctrl_c'
+            return ch.lower()
+        except Exception:
+            return None
+    else:
+        try:
+            import termios, tty, select
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                ch = sys.stdin.read(1)
+                if ch == '\x1b':
+                    r, _, _ = select.select([sys.stdin], [], [], 0.05)
+                    if r:
+                        ch2 = sys.stdin.read(1)
+                        if ch2 == '[':
+                            ch3 = sys.stdin.read(1)
+                            if ch3 == 'A': return 'up'
+                            if ch3 == 'B': return 'down'
+                            if ch3 == 'C': return 'right'
+                            if ch3 == 'D': return 'left'
+                    return 'esc'
+                if ch in ('\r', '\n'): return 'enter'
+                if ch == '\x03': return 'ctrl_c'
+                return ch.lower()
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        except Exception:
+            return None
+
+
+def select_menu(title, options, default_idx=0, shortcuts=None):
+    """
+    Renders an interactive terminal menu with arrow keys.
+    options: list of strings (or tuples of (display_label, return_value))
+    shortcuts: dict of char -> index (e.g. {'y': 0, 'a': 1, 'n': 2})
+    Returns: (index, selected_value) or (-1, None) if cancelled.
+    """
+    if not options:
+        return -1, None
+
+    # Format options
+    labels = []
+    values = []
+    for opt in options:
+        if isinstance(opt, tuple):
+            labels.append(opt[0])
+            values.append(opt[1])
+        else:
+            labels.append(str(opt))
+            values.append(opt)
+
+    idx = max(0, min(default_idx, len(labels) - 1))
+    shortcuts = shortcuts or {}
+
+    # Non-interactive / pipe fallback
+    if not sys.stdin.isatty():
+        print(f"{title}")
+        for i, lab in enumerate(labels):
+            print(f"  [{i + 1}] {lab}")
+        try:
+            val = input("Select an option: ").strip()
+            if val.isdigit() and 1 <= int(val) <= len(labels):
+                return int(val) - 1, values[int(val) - 1]
+            for k, s_idx in shortcuts.items():
+                if val.lower() == k:
+                    return s_idx, values[s_idx]
+            return 0, values[0]
+        except Exception:
+            return 0, values[0]
+
+    # Interactive arrow-key loop
+    print(f"\n{BOLD}{title}{RESET} {GRAY}(Use ↑/↓ to navigate, Enter to select, Esc to cancel){RESET}")
+    sys.stdout.write(HIDE_CURSOR)
+    sys.stdout.flush()
+
+    def draw_options(current_idx, first_render=False):
+        if not first_render:
+            sys.stdout.write(f"\033[{len(labels)}A\r")
+        for i, lab in enumerate(labels):
+            sys.stdout.write("\033[K") # Clear line
+            if i == current_idx:
+                sys.stdout.write(f" {CYAN}{BOLD}❯ {lab}{RESET}\n")
+            else:
+                sys.stdout.write(f"   {GRAY}{lab}{RESET}\n")
+        sys.stdout.flush()
+
+    draw_options(idx, first_render=True)
+
+    try:
+        while True:
+            key = read_single_key()
+            if key is None:
+                break
+
+            if key in ('up', 'k'):
+                idx = (idx - 1) % len(labels)
+                draw_options(idx)
+            elif key in ('down', 'j'):
+                idx = (idx + 1) % len(labels)
+                draw_options(idx)
+            elif key == 'enter':
+                # Clear menu lines and print selected item cleanly
+                sys.stdout.write(f"\033[{len(labels)}A\r")
+                for _ in range(len(labels)):
+                    sys.stdout.write("\033[K\n")
+                sys.stdout.write(f"\033[{len(labels)}A\r")
+                sys.stdout.write(f" {GREEN}✓ Selected:{RESET} {BOLD}{labels[idx]}{RESET}\n")
+                sys.stdout.flush()
+                return idx, values[idx]
+            elif key in ('esc', 'q'):
+                sys.stdout.write(f"\033[{len(labels)}A\r")
+                for _ in range(len(labels)):
+                    sys.stdout.write("\033[K\n")
+                sys.stdout.write(f"\033[{len(labels)}A\r")
+                sys.stdout.write(f" {GRAY}(Cancelled){RESET}\n")
+                sys.stdout.flush()
+                return -1, None
+            elif key in shortcuts:
+                s_idx = shortcuts[key]
+                if 0 <= s_idx < len(labels):
+                    sys.stdout.write(f"\033[{len(labels)}A\r")
+                    for _ in range(len(labels)):
+                        sys.stdout.write("\033[K\n")
+                    sys.stdout.write(f"\033[{len(labels)}A\r")
+                    sys.stdout.write(f" {GREEN}✓ Selected:{RESET} {BOLD}{labels[s_idx]}{RESET}\n")
+                    sys.stdout.flush()
+                    return s_idx, values[s_idx]
+            elif key == 'ctrl_c':
+                break
+    finally:
+        sys.stdout.write(SHOW_CURSOR)
+        sys.stdout.flush()
+
+    return -1, None
+
+
 def search_duckduckgo(query, max_results=5):
-    """Searches DuckDuckGo Lite without API keys and returns structured results (Cross-Platform)."""
+    """Searches DuckDuckGo Lite without API keys (Cross-Platform)."""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     data = f"q={urllib.parse.quote(query)}".encode("utf-8")
     
     html_text = ""
-    # Try Python urllib first (universal on Windows/Mac/Linux)
     try:
         req = urllib.request.Request("https://lite.duckduckgo.com/lite/", data=data, headers=headers)
         with urllib.request.urlopen(req, timeout=12) as resp:
             html_text = resp.read().decode("utf-8", errors="replace")
     except Exception:
-        # Fallback to curl if available
         try:
             res = subprocess.run(
                 ["curl", "-sL", "-A", headers["User-Agent"], "--max-time", "12", "https://lite.duckduckgo.com/lite/", "--data", f"q={urllib.parse.quote(query)}"],
@@ -143,7 +305,6 @@ def fetch_url_content(url):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     html_text = ""
     
-    # Try curl first for robust HTTP/2 and TLS on complex sites
     try:
         res = subprocess.run(
             ["curl", "-sL", "-A", headers["User-Agent"], "--max-time", "15", url],
@@ -154,7 +315,6 @@ def fetch_url_content(url):
     except Exception:
         pass
 
-    # Fallback to Python urllib
     if not html_text:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -202,23 +362,27 @@ class Agent:
         self.history = [{"role": "system", "content": get_system_prompt()}]
 
     def ask_permission(self, action_desc):
-        """Prompts user for approval unless in auto mode."""
+        """Interactive permission menu with arrow keys and shortcuts."""
         if self.auto:
             return True
-        try:
-            prompt = f"   {GRAY}Approve {action_desc}? [Y/n/a(auto-all)]: {RESET}"
-            ans = input(prompt).strip().lower()
-            if ans == "a":
-                self.auto = True
-                print(f"   {YELLOW}⚡ Auto-mode enabled for remaining actions.{RESET}")
-                return True
-            elif ans in ("", "y", "yes"):
-                return True
-            else:
-                print(f"   {RED}Action skipped.{RESET}")
-                return False
-        except (EOFError, KeyboardInterrupt):
-            print(f"\n   {RED}Action cancelled.{RESET}")
+        
+        options = [
+            ("[Y] Approve this action", "yes"),
+            ("[A] Always Allow (Switch to Auto Mode)", "auto"),
+            ("[N] Skip this action", "no")
+        ]
+        shortcuts = {'y': 0, 'a': 1, 'n': 2}
+        
+        idx, choice = select_menu(f"Action approval required for: {action_desc}", options, default_idx=0, shortcuts=shortcuts)
+        
+        if choice == "yes":
+            return True
+        elif choice == "auto":
+            self.auto = True
+            print(f"   {YELLOW}⚡ Auto-mode enabled for remaining actions.{RESET}")
+            return True
+        else:
+            print(f"   {RED}Action skipped.{RESET}")
             return False
 
     def execute_tool(self, name, args):
@@ -268,7 +432,6 @@ class Agent:
                 replacement_norm = replacement.replace("\r\n", "\n")
 
                 if target_norm not in old_text_norm:
-                    # Whitespace-tolerant fallback
                     norm_target = "\n".join(line.strip() for line in target_norm.strip().splitlines())
                     norm_file = "\n".join(line.strip() for line in old_text_norm.splitlines())
                     if norm_target not in norm_file:
@@ -385,7 +548,6 @@ class Agent:
             search_path = args.get("path", ".")
             print(f"\n{CYAN}🔍 Code Search:{RESET} '{query}' in {search_path}")
             
-            # Try ripgrep or grep first
             try:
                 cmd = f"rg -n -i --max-count 40 \"{query}\" \"{search_path}\" 2>/dev/null || grep -rnI --exclude-dir=.git \"{query}\" \"{search_path}\" 2>/dev/null"
                 res = subprocess.run(cmd, shell=True, text=True, capture_output=True, timeout=10)
@@ -396,7 +558,6 @@ class Agent:
             except Exception:
                 pass
 
-            # Pure Python cross-platform recursive search fallback (Windows / minimal systems)
             matches = []
             try:
                 for root, dirs, files in os.walk(search_path):
@@ -565,7 +726,7 @@ def main():
     print(f"\n{BOLD}{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
     print(f"{BOLD}{CYAN}⚡ Qwen Code Agent{RESET} {GRAY}v{__version__} ({OS_NAME}) • Local Autonomous Engineer{RESET}")
     print(f"{GRAY}Model:{RESET} {GREEN}{agent.model}{RESET}  {GRAY}Mode:{RESET} {mode_str}  {GRAY}Context:{RESET} {agent.context}")
-    print(f"{GRAY}Type /help for options, /models to list models, or 'exit' to quit.{RESET}")
+    print(f"{GRAY}Type /help for options, /models to select models, or 'exit' to quit.{RESET}")
     print(f"{BOLD}{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}\n")
 
     while True:
@@ -622,34 +783,40 @@ def main():
             else:
                 print(f"{GRAY}Usage: /search <keywords>{RESET}\n")
             continue
-        elif user_input.lower() == "/models":
+        elif user_input.lower() in ("/models", "/model"):
             models = list_installed_models(agent.host)
-            if models:
-                print(f"\n{BOLD}Installed Ollama Models:{RESET}")
-                for m in models:
-                    cur = f" {GREEN}(current){RESET}" if m == agent.model else ""
-                    print(f"  • {m}{cur}")
-                print(f"{GRAY}Use '/model <name>' to switch models.{RESET}\n")
-            else:
+            if not models:
                 print(f"{RED}Could not reach Ollama at {agent.host}{RESET}\n")
+                continue
+
+            current_idx = 0
+            menu_options = []
+            for i, m in enumerate(models):
+                if m == agent.model:
+                    current_idx = i
+                    menu_options.append((f"{m} {GREEN}(current active){RESET}", m))
+                else:
+                    menu_options.append((m, m))
+
+            _, chosen_model = select_menu("Select an Ollama Model to activate:", menu_options, default_idx=current_idx)
+            if chosen_model:
+                agent.model = chosen_model
+                print(f"{GREEN}Active model updated to:{RESET} {BOLD}{agent.model}{RESET}\n")
             continue
         elif user_input.lower().startswith("/model"):
             parts = user_input.split()
             if len(parts) > 1:
                 agent.model = parts[1]
                 print(f"{GREEN}Switched active model to:{RESET} {BOLD}{agent.model}{RESET}\n")
-            else:
-                print(f"{GRAY}Current model: {agent.model}. Usage: /model <model_name>{RESET}\n")
             continue
         elif user_input.lower() == "/help":
             print(f"""
 {BOLD}Interactive Slash Commands:{RESET}
+  {CYAN}/models{RESET}        Interactive arrow-key menu to switch Ollama models
   {CYAN}/auto{RESET}          Toggle between Permission Mode and Auto-Approve Mode
   {CYAN}/diff{RESET}          Show current uncommitted git diff
   {CYAN}/undo{RESET}          Discard recent uncommitted changes (`git checkout .`)
   {CYAN}/search <q>{RESET}   Run an instant web search from terminal
-  {CYAN}/models{RESET}        List all available Ollama models installed locally
-  {CYAN}/model <name>{RESET} Switch active model on the fly (e.g. /model qwen2.5-coder:7b)
   {CYAN}/clear{RESET}         Reset conversation history
   {CYAN}exit / quit{RESET}    Exit session
 """)
