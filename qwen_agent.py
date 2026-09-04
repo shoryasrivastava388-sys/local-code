@@ -98,7 +98,7 @@ The tools are:
 
 
 def get_system_prompt():
-    return SYSTEM_PROMPT_TEMPLATE.format(os_name=OS_NAME)
+    return SYSTEM_PROMPT_TEMPLATE.replace("{os_name}", OS_NAME)
 
 
 def search_duckduckgo(query, max_results=5):
