@@ -4,10 +4,10 @@ set -e
 INSTALL_DIR="${HOME}/.local/bin"
 mkdir -p "${INSTALL_DIR}"
 
-SCRIPT_URL="https://raw.githubusercontent.com/shoryasrivastava388-sys/qwen-agent/main/qwen_agent.py"
-TARGET="${INSTALL_DIR}/qwen-agent"
+SCRIPT_URL="https://raw.githubusercontent.com/shoryasrivastava388-sys/local-code/main/local_code.py"
+TARGET="${INSTALL_DIR}/local-code"
 
-echo "→ Installing qwen-agent to ${INSTALL_DIR}..."
+echo "→ Installing local-code (lc) to ${INSTALL_DIR}..."
 if command -v curl >/dev/null 2>&1; then
     curl -fsSL "${SCRIPT_URL}" -o "${TARGET}"
 elif command -v wget >/dev/null 2>&1; then
@@ -18,13 +18,16 @@ else
 fi
 
 chmod +x "${TARGET}"
+ln -sf "${TARGET}" "${INSTALL_DIR}/lc"
 ln -sf "${TARGET}" "${INSTALL_DIR}/qc"
+ln -sf "${TARGET}" "${INSTALL_DIR}/qwen-agent"
 
-echo "✓ Successfully installed qwen-agent and qc to ${INSTALL_DIR}"
+echo "✓ Successfully installed local-code (lc) to ${INSTALL_DIR}"
 echo ""
 echo "Make sure ${INSTALL_DIR} is in your PATH:"
 echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
 echo ""
 echo "Usage:"
-echo "  qc                 # Interactive mode"
-echo "  qc -y 'Task'       # Auto-approve mode"
+echo "  lc                 # Interactive mode"
+echo "  lc -y 'Task'       # Auto-approve mode"
+

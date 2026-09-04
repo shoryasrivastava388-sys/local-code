@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-qwen-agent (qc) - Cross-Platform Autonomous Local AI Engineer powered by Ollama.
+local-code (lc) - Universal Cross-Platform Autonomous Local AI Engineer powered by Ollama.
 Features:
 - Interactive arrow-key menu selectors for model switching (/models) and permissions
 - Search the web (DuckDuckGo Lite) and fetch documentation
@@ -57,7 +57,7 @@ GRAY = "\033[90m"
 HIDE_CURSOR = "\033[?25l"
 SHOW_CURSOR = "\033[?25h"
 
-SYSTEM_PROMPT_TEMPLATE = """You are an elite, autonomous software engineering agent operating directly on the local machine.
+SYSTEM_PROMPT_TEMPLATE = """You are Local Code (lc), an elite autonomous software engineering agent operating directly on the local machine.
 Host OS: {os_name}
 You have native access to system tools for searching the web, browsing documentation, reading code, editing files, and running terminal commands.
 
@@ -702,14 +702,28 @@ def list_installed_models(host):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="qwen-agent (qc): Cross-Platform Autonomous Local AI Engineer powered by Ollama.")
+    default_model = (
+        os.environ.get("LOCAL_CODE_MODEL")
+        or os.environ.get("LC_MODEL")
+        or os.environ.get("QWEN_MODEL")
+        or "qwen2.5-coder:7b"
+    )
+    default_host = (
+        os.environ.get("LOCAL_CODE_HOST")
+        or os.environ.get("LC_HOST")
+        or os.environ.get("OLLAMA_API_BASE")
+        or os.environ.get("OLLAMA_HOST")
+        or "http://127.0.0.1:11434"
+    )
+
+    parser = argparse.ArgumentParser(description="local-code (lc): Universal Cross-Platform Autonomous Local AI Engineer powered by Ollama.")
     parser.add_argument("prompt", nargs="*", help="Direct prompt to execute (non-interactive mode)")
-    parser.add_argument("-m", "--model", default=os.environ.get("QWEN_MODEL", "qwen2.5-coder:7b"), help="Ollama model name")
+    parser.add_argument("-m", "--model", default=default_model, help="Ollama model name (default: %(default)s)")
     parser.add_argument("-y", "--yes", action="store_true", help="Auto-approve all actions (Auto Mode)")
     parser.add_argument("-c", "--context", type=int, default=4096, help="Context window size in tokens")
     parser.add_argument("-t", "--temp", type=float, default=0.2, help="Sampling temperature")
-    parser.add_argument("--host", default=os.environ.get("OLLAMA_API_BASE", "http://127.0.0.1:11434"), help="Ollama API base URL")
-    parser.add_argument("-v", "--version", action="version", version=f"qwen-agent {__version__} ({OS_NAME})")
+    parser.add_argument("--host", default=default_host, help="Ollama API base URL")
+    parser.add_argument("-v", "--version", action="version", version=f"local-code (lc) {__version__} ({OS_NAME})")
 
     args = parser.parse_args()
 
@@ -724,7 +738,7 @@ def main():
     # Interactive REPL mode
     mode_str = f"{GREEN}Auto-Approve{RESET}" if agent.auto else f"{YELLOW}Permission Mode{RESET}"
     print(f"\n{BOLD}{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
-    print(f"{BOLD}{CYAN}⚡ Qwen Code Agent{RESET} {GRAY}v{__version__} ({OS_NAME}) • Local Autonomous Engineer{RESET}")
+    print(f"{BOLD}{CYAN}⚡ Local Code{RESET} {GRAY}v{__version__} ({OS_NAME}) • Universal Autonomous Local AI{RESET}")
     print(f"{GRAY}Model:{RESET} {GREEN}{agent.model}{RESET}  {GRAY}Mode:{RESET} {mode_str}  {GRAY}Context:{RESET} {agent.context}")
     print(f"{GRAY}Type /help for options, /models to select models, or 'exit' to quit.{RESET}")
     print(f"{BOLD}{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}\n")

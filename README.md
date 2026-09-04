@@ -1,23 +1,23 @@
-# ⚡ qwen-agent (`qc`)
+# ⚡ Local Code (`lc`)
 
 > **Autonomous Local AI Coding & Computer Agent powered by Ollama.**  
-> 100% private, 100% local. Works natively on **Linux, macOS, and Windows**. An open-source alternative to Claude Code and Antigravity. Zero subscriptions, zero API keys, zero telemetry, and zero heavy dependencies.
+> 100% private, 100% local. Works natively on **Linux, macOS, and Windows**. A universal open-source alternative to Claude Code and Antigravity. Zero subscriptions, zero API keys, zero telemetry, and zero heavy dependencies.
 
 ---
 
 > [!WARNING]
 > ### 🚧 Active Development & Work-in-Progress (WIP)
-> This project is under active continuous development. Features, model tuning, and benchmark optimizations are updated daily.
+> This project is under active continuous development. Features, multi-model optimizations, and tool integrations are updated daily.
 
 ---
 
 ## 💻 Cross-Platform Support
 
-`qwen-agent` (`qc`) is built from the ground up to run natively across all three operating systems:
+`local-code` (`lc`) is built from the ground up to run natively across all three operating systems:
 
 * 🐧 **Linux:** Native Bash / Zsh execution, `curl` & `urllib` networking, native browser control.
 * 🍎 **macOS:** Native Zsh / Apple Silicon GPU acceleration (`mps`), default browser launch.
-* 🪟 **Windows:** Native Command Prompt & PowerShell execution, ANSI colors, recursive file walker fallback, Windows default browser launch, and batch wrappers (`qc.cmd`).
+* 🪟 **Windows:** Native Command Prompt & PowerShell execution, ANSI colors, recursive file walker fallback, Windows default browser launch, and batch wrappers (`lc.cmd`, `local-code.cmd`).
 
 ---
 
@@ -28,7 +28,7 @@ Follow these 3 simple steps to get running immediately:
 ### Step 1: Install Ollama & Download a Model
 
 1. Download and install **[Ollama](https://ollama.com/download)** (available for Linux, macOS, and Windows).
-2. Open your terminal and pull a model of your choice:
+2. Open your terminal and pull any model of your choice:
 
 ```bash
 # Recommended default (Best balance of speed and intelligence on laptops):
@@ -42,23 +42,23 @@ ollama run qwen2.5-coder:14b     # High-reasoning Qwen
 
 ---
 
-### Step 2: Install `qc` in 1 Line
+### Step 2: Install `lc` in 1 Line
 
 Choose the command for your operating system:
 
 #### 🐧 Linux & 🍎 macOS (Terminal)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/shoryasrivastava388-sys/qwen-agent/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/shoryasrivastava388-sys/local-code/main/install.sh | bash
 ```
 
 #### 🪟 Windows (PowerShell)
 ```powershell
-irm https://raw.githubusercontent.com/shoryasrivastava388-sys/qwen-agent/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/shoryasrivastava388-sys/local-code/main/install.ps1 | iex
 ```
 
 #### 📦 Universal via Pip / uv (All Platforms)
 ```bash
-pip install git+https://github.com/shoryasrivastava388-sys/qwen-agent.git
+pip install git+https://github.com/shoryasrivastava388-sys/local-code.git
 ```
 
 Ensure `~/.local/bin` (or `%USERPROFILE%\.local\bin` on Windows) is in your `PATH`.
@@ -70,26 +70,26 @@ Ensure `~/.local/bin` (or `%USERPROFILE%\.local\bin` on Windows) is in your `PAT
 In any project repository, simply run:
 
 ```bash
-qc
+lc
 ```
 
-*(or run `qc -y` to auto-approve all actions)*
+*(or run `lc -y` to auto-approve all actions)*
 
 ---
 
 ## 🧠 Supported Local Models Matrix
 
-`qwen-agent` works with **any model running on Ollama**. Pick the model that fits your hardware:
+`local-code` works with **any model running on Ollama**. Pick the model that fits your hardware:
 
 | Category | Model Name | VRAM / RAM Required | Best Suited For | Launch Command |
 |---|---|:---:|---|---|
-| **⭐ Recommended (Default)** | `qwen2.5-coder:7b` | ~5–8 GB | Laptops, budget GPUs, fast debugging & tool use | `qc` |
-| **🧠 Deep Reasoning** | `deepseek-r1:8b` | ~6–8 GB | Complex algorithm logic & math tasks | `qc -m deepseek-r1:8b` |
-| **🌐 General Coding** | `llama3.1:8b` | ~6–8 GB | Code generation, bash automation, general chat | `qc -m llama3.1:8b` |
-| **🚀 Powerful Workstation** | `qwen2.5-coder:14b` | ~10–14 GB | High-level refactoring & large repositories | `qc -m qwen2.5-coder:14b` |
-| **👑 Flagship Intelligence** | `qwen2.5-coder:32b` | ~20–24 GB | Near Claude 3.5 Sonnet level local intelligence | `qc -m qwen2.5-coder:32b` |
-| **🔬 Advanced Reasoning** | `deepseek-coder-v2` | ~10–16 GB | DeepSeek MoE code intelligence | `qc -m deepseek-coder-v2` |
-| **🪶 Ultra-Lightweight** | `qwen2.5-coder:1.5b` | ~2–3 GB | Low-spec laptops & budget CPUs | `qc -m qwen2.5-coder:1.5b` |
+| **⭐ Recommended (Default)** | `qwen2.5-coder:7b` | ~5–8 GB | Laptops, budget GPUs, fast debugging & tool use | `lc` |
+| **🧠 Deep Reasoning** | `deepseek-r1:8b` | ~6–8 GB | Complex algorithm logic & math tasks | `lc -m deepseek-r1:8b` |
+| **🌐 General Coding** | `llama3.1:8b` | ~6–8 GB | Code generation, bash automation, general chat | `lc -m llama3.1:8b` |
+| **🚀 Powerful Workstation** | `qwen2.5-coder:14b` | ~10–14 GB | High-level refactoring & large repositories | `lc -m qwen2.5-coder:14b` |
+| **👑 Flagship Intelligence** | `qwen2.5-coder:32b` | ~20–24 GB | Near Claude 3.5 Sonnet level local intelligence | `lc -m qwen2.5-coder:32b` |
+| **🔬 Advanced Reasoning** | `deepseek-coder-v2` | ~10–16 GB | DeepSeek MoE code intelligence | `lc -m deepseek-coder-v2` |
+| **🪶 Ultra-Lightweight** | `qwen2.5-coder:1.5b` | ~2–3 GB | Low-spec laptops & budget CPUs | `lc -m qwen2.5-coder:1.5b` |
 
 ---
 
@@ -103,16 +103,16 @@ You can switch models anytime without restarting:
    * `/model <name>` $\rightarrow$ Switches active model directly (e.g. `/model deepseek-r1:8b`).
 3. **At launch:**
    ```bash
-   qc -m deepseek-r1:8b
+   lc -m deepseek-r1:8b
    ```
 4. **Permanent default via environment:**
    ```bash
-   export QWEN_MODEL="deepseek-r1:8b"
+   export LC_MODEL="deepseek-r1:8b"
    ```
 
 ---
 
-## 🎯 The Problem with Local AI (and Why `qc` Exists)
+## 🎯 The Problem with Local AI (and Why `lc` Exists)
 
 When you run an AI model locally (e.g. through `ollama run ...`, LM Studio, or web UIs), **the model is trapped in a text box**:
 
@@ -123,9 +123,9 @@ When you run an AI model locally (e.g. through `ollama run ...`, LM Studio, or w
 
 ---
 
-## 💡 The Solution: `qwen-agent` (`qc`)
+## 💡 The Solution: `local-code` (`lc`)
 
-`qwen-agent` gives your local model **hands and eyes**:
+`local-code` gives your local model **hands and eyes**:
 
 ```
  ┌──────────────────────────────────────────────────────────────┐
@@ -142,7 +142,7 @@ When you run an AI model locally (e.g. through `ollama run ...`, LM Studio, or w
  └─────────────────────────────┘ └─────────────────────────────┘
 ```
 
-When you give `qwen-agent` a task, it:
+When you give `local-code` a task, it:
 1. **Explores the Repo:** Reads your files, checks directory trees, and inspects git status.
 2. **Searches the Web:** If it encounters an unfamiliar API or library, it searches DuckDuckGo and reads online documentation.
 3. **Applies Surgical Edits:** It modifies only the necessary lines with colored unified diffs—**never** wiping or recreating existing files.
@@ -152,7 +152,7 @@ When you give `qwen-agent` a task, it:
 
 ## 📊 Feature Comparison
 
-| Feature | Raw Ollama Chat | Traditional Tools | Claude Code | **`qwen-agent` (`qc`)** |
+| Feature | Raw Ollama Chat | Traditional Tools | Claude Code | **`local-code` (`lc`)** |
 |---|:---:|:---:|:---:|:---:|
 | **100% Free & Local** | ✅ | ⚠️ Partial | ❌ ($20/mo + API) | **✅ Yes (Ollama)** |
 | **Complete Privacy (No Cloud)** | ✅ | ⚠️ | ❌ | **✅ 100% Local** |
@@ -172,26 +172,26 @@ When you give `qwen-agent` a task, it:
 Launch the interactive REPL in any project directory:
 
 ```bash
-qc
+lc
 ```
-*(or run `qc -y` to auto-approve actions)*
+*(or run `lc -y` to auto-approve actions)*
 
 ### 2. Autonomous Debugging
 
 ```bash
-qc -y "Run pytest, find all failing tests, patch the source code, and verify they pass."
+lc -y "Run pytest, find all failing tests, patch the source code, and verify they pass."
 ```
 
 ### 3. Web Research & Implementation
 
 ```bash
-qc -y "Search the web for how to implement WebSocket connection pooling in FastAPI and add it to src/server.py."
+lc -y "Search the web for how to implement WebSocket connection pooling in FastAPI and add it to src/server.py."
 ```
 
 ### 4. Codebase Exploration & Refactoring
 
 ```bash
-qc "Find all deprecated function calls in this repository and refactor them."
+lc "Find all deprecated function calls in this repository and refactor them."
 ```
 
 ---
@@ -202,12 +202,12 @@ Inside the interactive chat:
 
 | Command | Action |
 |---|---|
+| `/models` | Interactive arrow-key menu to switch Ollama models |
+| `/model <name>` | Switch active model directly (e.g. `/model deepseek-r1:8b`) |
 | `/auto` or `/perm` | Toggle between **Permission Mode** and **Auto Mode** |
 | `/diff` | Display colored git diff of current uncommitted changes |
 | `/undo` | Discard recent uncommitted changes (`git checkout .`) |
 | `/search <query>` | Run an instant live web search directly from the prompt |
-| `/models` | List all local Ollama models installed on your machine |
-| `/model <name>` | Switch active model on the fly (e.g. `/model deepseek-r1:8b`) |
 | `/clear` | Reset conversation context memory |
 | `exit` / `quit` | Exit session |
 
@@ -233,7 +233,7 @@ Inside the interactive chat:
 ## ⚙️ CLI Options
 
 ```text
-usage: qc [-h] [-m MODEL] [-y] [-c CONTEXT] [-t TEMP] [--host HOST] [-v] [prompt ...]
+usage: lc [-h] [-m MODEL] [-y] [-c CONTEXT] [-t TEMP] [--host HOST] [-v] [prompt ...]
 
 positional arguments:
   prompt                Direct prompt to execute (non-interactive mode)
