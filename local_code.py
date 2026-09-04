@@ -22,13 +22,15 @@ import re
 import signal
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -158,6 +160,10 @@ def read_single_key():
                             if ch3 == 'B': return 'down'
                             if ch3 == 'C': return 'right'
                             if ch3 == 'D': return 'left'
+                            # Consume rest of multi-char escape sequence (e.g. 2~ for Insert key)
+                            while select.select([sys.stdin], [], [], 0.03)[0]:
+                                sys.stdin.read(1)
+                            return 'special'
                     return 'esc'
                 if ch in ('\r', '\n'): return 'enter'
                 if ch == '\x03': return 'ctrl_c'
@@ -776,6 +782,23 @@ class Agent:
         printed_prefix = False
         token_count = 0
 
+        # Background animated spinner while CPU is prefilling / evaluating prompt
+        stop_spinner = threading.Event()
+        start_time = time.time()
+
+        def spin():
+            spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+            i = 0
+            while not stop_spinner.is_set():
+                elapsed = int(time.time() - start_time)
+                sys.stdout.write(f"\r{DIM}{spinner_frames[i % len(spinner_frames)]} [Step {step}] Thinking & evaluating prompt... ({elapsed}s){RESET}\033[K")
+                sys.stdout.flush()
+                i += 1
+                time.sleep(0.1)
+
+        spin_thread = threading.Thread(target=spin, daemon=True)
+        spin_thread.start()
+
         try:
             with urllib.request.urlopen(req, timeout=300) as resp:
                 for raw in resp:
@@ -785,7 +808,13 @@ class Agent:
                     token = chunk.get("message", {}).get("content", "")
                     if not token:
                         continue
-                    
+
+                    if not stop_spinner.is_set():
+                        stop_spinner.set()
+                        spin_thread.join(timeout=0.2)
+                        sys.stdout.write(f"\r\033[K")
+                        sys.stdout.flush()
+
                     accumulated += token
                     token_count += 1
 
@@ -823,6 +852,8 @@ class Agent:
         except Exception as e:
             print(f"\n{RED}Inference error: {e}{RESET}")
             return ""
+        finally:
+            stop_spinner.set()
 
     def run(self, user_prompt, max_steps=20):
         # Sanitize pasted escape sequences from terminals (e.g. ^[E or \x1b[E)
@@ -831,7 +862,6 @@ class Agent:
         step = 1
 
         while step <= max_steps:
-            print(f"{DIM}[Step {step}] Thinking...{RESET}", end="\r", flush=True)
             res = self.stream_turn(step=step, user_prompt=user_prompt)
             if not res:
                 break
@@ -840,6 +870,8 @@ class Agent:
             name, args, is_tool = self.extract_tool_call(res, user_prompt=user_prompt, step=step)
 
             if not is_tool:
+                if not any(marker in res for marker in ("Qwen:",)) and res.strip():
+                    print(f"\n{BOLD}{CYAN}Qwen:{RESET} {res.strip()}")
                 break
 
             print(" " * 30, end="\r")
