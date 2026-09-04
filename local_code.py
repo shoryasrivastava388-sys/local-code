@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -428,29 +428,43 @@ def validate_code(path, content):
                     continue
                 node_runner = (
                     "const vm = require('vm');\n"
-                    "const mockElem = {\n"
-                    "  getContext: () => ({\n"
-                    "    fillRect: () => {}, clearRect: () => {}, fillText: () => {}, strokeRect: () => {},\n"
-                    "    beginPath: () => {}, arc: () => {}, fill: () => {}, stroke: () => {}\n"
-                    "  }),\n"
-                    "  appendChild: () => {}, addEventListener: () => {}, style: {},\n"
-                    "  width: 400, height: 400\n"
-                    "};\n"
+                    "function createMock(name = 'mock') {\n"
+                    "  const fn = function() { return createMock(name + '()'); };\n"
+                    "  return new Proxy(fn, {\n"
+                    "    get(target, prop) {\n"
+                    "      if (prop === Symbol.toPrimitive || prop === 'toString' || prop === 'valueOf') return () => name;\n"
+                    "      if (prop === 'width' || prop === 'height' || prop === 'innerWidth' || prop === 'innerHeight') return 500;\n"
+                    "      if (prop === 'style') return {};\n"
+                    "      if (prop === 'classList') return { add: () => {}, remove: () => {}, contains: () => false, toggle: () => {} };\n"
+                    "      if (prop === 'currentTime') return 0;\n"
+                    "      if (prop === 'state') return 'running';\n"
+                    "      if (prop === 'destination') return createMock('dest');\n"
+                    "      if (prop === 'localStorage' || prop === 'sessionStorage') return { getItem: () => null, setItem: () => {}, removeItem: () => {} };\n"
+                    "      return createMock(name + '.' + String(prop));\n"
+                    "    },\n"
+                    "    set() { return true; },\n"
+                    "    apply() { return createMock(name + '()'); },\n"
+                    "    construct() { return createMock('new ' + name); }\n"
+                    "  });\n"
+                    "}\n"
+                    "const mockDOM = createMock('DOM');\n"
                     "const sandbox = {\n"
-                    "  window: { innerWidth: 800, innerHeight: 600, addEventListener: () => {}, location: { reload: () => {} } },\n"
-                    "  document: {\n"
-                    "    createElement: () => mockElem, getElementById: () => mockElem, querySelector: () => mockElem,\n"
-                    "    addEventListener: () => {}, body: mockElem\n"
-                    "  },\n"
-                    "  console: { log: () => {}, error: () => {}, warn: () => {} },\n"
-                    "  setTimeout: () => {}, setInterval: () => {}, requestAnimationFrame: () => {},\n"
-                    "  alert: () => {}, Math: Math,\n"
+                    "  window: mockDOM,\n"
+                    "  document: mockDOM,\n"
+                    "  console: console,\n"
+                    "  setTimeout: (fn) => {},\n"
+                    "  setInterval: (fn) => {},\n"
+                    "  requestAnimationFrame: (fn) => {},\n"
+                    "  alert: () => {},\n"
+                    "  Math: Math,\n"
+                    "  AudioContext: mockDOM,\n"
+                    "  webkitAudioContext: mockDOM,\n"
                     "  localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },\n"
                     "  sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} }\n"
                     "};\n"
                     "sandbox.window.localStorage = sandbox.localStorage;\n"
                     "sandbox.window.sessionStorage = sandbox.sessionStorage;\n"
-                    "sandbox.window.document = sandbox.document;\n"
+                    "sandbox.window.document = mockDOM;\n"
                     "vm.createContext(sandbox);\n"
                     "try {\n"
                     "  vm.runInContext(process.env.TEST_CODE, sandbox, { timeout: 2000 });\n"
@@ -1473,6 +1487,13 @@ class Agent:
                 target_file = fn_match.group(1) if fn_match else "the requested code file"
                 result = f"Loop prevented: Web research is already complete. Proceed IMMEDIATELY to invoke 'write_file' to create '{target_file}' with your code implementation. Do NOT search or browse the web again."
                 print(f"   {YELLOW}⚡ Research complete. Transitioning directly to code creation...{RESET}")
+            elif recent_tool_sigs.count(sig) >= 1 and name == "read_file":
+                target_file = args.get("path", "")
+                if (target_file.endswith((".html", ".htm")) or "html" in p_lower) and any(w in p_lower for w in ("open", "browser", "launch", "play", "view", "test")):
+                    result = f"Loop prevented: '{target_file}' is already read and verified with 0 errors. Proceed IMMEDIATELY to invoke 'open_browser' with args: {{\"url\": \"{target_file}\"}} to test it in the browser."
+                    print(f"   {YELLOW}⚡ File already verified. Transitioning directly to browser test...{RESET}")
+                else:
+                    result = f"Loop prevented: '{target_file}' is already read. Proceed to edit the file or execute your next action."
             else:
                 recent_tool_sigs.append(sig)
                 result = self.execute_tool(name, args, user_prompt=user_prompt)
@@ -1500,8 +1521,10 @@ class Agent:
                         + "\n".join(f"- {iss}" for iss in file_issues)
                         + f"\nYou MUST invoke 'edit_file' now with the exact target code snippet to fix these issues. Do NOT stop or summarize without editing."
                     )
+                elif any(w in p_lower for w in ("open", "browser", "launch", "play", "view", "test")) and (target_f.endswith((".html", ".htm")) or "html" in p_lower):
+                    feedback += f"File '{target_f}' has been inspected and has 0 diagnostic errors. Invoke 'open_browser' now with args: {{\"url\": \"{target_f}\"}} to test and preview the application in the desktop browser."
                 elif any(w in p_lower for w in ("fix", "repair", "debug", "solve", "bug")):
-                    feedback += f"File '{target_f}' has been read. You MUST invoke 'edit_file' now with the exact target snippet from the file to fix the reported issue. Do NOT just summarize the code."
+                    feedback += f"File '{target_f}' has been read (0 diagnostic errors). If there are specific bugs reported by the user, invoke 'edit_file' with the exact target snippet. If the code is already functioning correctly, invoke 'open_browser' with args: {{\"url\": \"{target_f}\"}} to verify it."
                 else:
                     feedback += f"File '{target_f}' read successfully. Proceed with the necessary modification via edit_file or command execution."
             elif name in ("write_file", "edit_file"):
