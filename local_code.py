@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.4.8"
+__version__ = "1.5.0"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -93,6 +93,8 @@ The tools are:
   args: `{"query": "string", "path": "optional_path"}`
 - `git_diff`: View git status and current uncommitted diffs.
   args: `{"path": "optional_path"}`
+- `inspect_ui`: Capture a headless screenshot of a local web page, run an offline visual audit, and get aesthetic styling critique and recommendations.
+  args: `{"path": "filepath.html"}`
 
 ## Core Operational Directives
 1. ALWAYS SAVE CODE TO FILES (NEVER DUMP CODE IN CHAT):
@@ -646,6 +648,120 @@ class Agent:
                 return f"Successfully opened '{display_label}' in default browser."
             except Exception as e:
                 return f"Error opening browser: {e}"
+
+        elif name in ("inspect_ui", "screenshot_ui"):
+            target = (args.get("path") or args.get("file") or args.get("url") or "").strip()
+            if not target:
+                html_matches = re.findall(r"\b[\w-]+\.html?\b", user_prompt, re.IGNORECASE)
+                target = html_matches[0] if html_matches else "snake.html"
+
+            p = Path(os.path.expanduser(target))
+            if not p.is_absolute():
+                p = (Path(os.getcwd()) / p).resolve()
+            if not p.is_file():
+                return f"Error: File '{target}' does not exist on disk."
+
+            display_path = str(p.relative_to(os.getcwd())) if str(p).startswith(os.getcwd()) else str(p)
+            print(f"\n{CYAN}📸 Visual UI Inspector:{RESET} {BOLD}{display_path}{RESET}")
+
+            # Step 1: Capture headless screenshot via Firefox
+            import tempfile
+            import shutil
+            shot_file = Path(tempfile.gettempdir()) / f"lc_ui_{p.stem}.png"
+            shot_captured = False
+            if subprocess.run("which firefox", shell=True, capture_output=True).returncode == 0:
+                temp_prof = tempfile.mkdtemp(prefix="lc_inspect_")
+                try:
+                    ff_cmd = [
+                        "firefox", "--headless", "--no-remote",
+                        "--profile", temp_prof,
+                        "--window-size", "1280,800",
+                        "--screenshot", str(shot_file),
+                        p.as_uri()
+                    ]
+                    subprocess.run(ff_cmd, capture_output=True, text=True, timeout=10)
+                    if shot_file.exists() and shot_file.stat().st_size > 0:
+                        shot_captured = True
+                        print(f"   {GREEN}✓ Captured 1280x800 headless screenshot ({shot_file.stat().st_size} bytes){RESET}")
+                except Exception:
+                    pass
+                finally:
+                    shutil.rmtree(temp_prof, ignore_errors=True)
+
+            # Step 2: Check for local Ollama vision models (moondream, llava, minicpm-v, llama3.2-vision)
+            vision_models = ["moondream", "llava", "minicpm-v", "llama3.2-vision", "qwen2-vl"]
+            installed = list_installed_models(self.host)
+            active_vision = next((m for m in installed if any(v in m.lower() for v in vision_models)), None)
+
+            ai_critique = ""
+            if shot_captured and active_vision:
+                try:
+                    print(f"   {MAGENTA}👁️  Running local offline visual critique via {active_vision}...{RESET}")
+                    import base64
+                    with open(shot_file, "rb") as sf:
+                        img_b64 = base64.b64encode(sf.read()).decode("utf-8")
+                    v_prompt = (
+                        "Analyze this UI screenshot. Critique the visual design, color palette, "
+                        "spacing, typography, and contrast. Give 3-5 specific CSS and layout suggestions "
+                        "to make it look modern, high-end, and visually appealing."
+                    )
+                    payload = {
+                        "model": active_vision,
+                        "prompt": v_prompt,
+                        "images": [img_b64],
+                        "stream": False,
+                        "options": {"num_predict": 300, "temperature": 0.2}
+                    }
+                    req = urllib.request.Request(
+                        f"{self.host}/api/generate",
+                        data=json.dumps(payload).encode("utf-8"),
+                        headers={"Content-Type": "application/json"}
+                    )
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        res_data = json.loads(resp.read().decode("utf-8"))
+                        ai_critique = res_data.get("response", "").strip()
+                except Exception:
+                    pass
+
+            # Step 3: Automated DOM and CSS Aesthetic Audit
+            content = p.read_text(encoding="utf-8", errors="replace")
+            content_lower = content.lower()
+            audit_points = []
+
+            if "font-family" not in content_lower or "monospace" in content_lower:
+                audit_points.append("Typography: Upgrade font stack to modern system typography ('Segoe UI', system-ui, 'Inter') or stylish retro display fonts with letter-spacing and text-shadows.")
+
+            if "border-radius" not in content_lower or "box-shadow" not in content_lower:
+                audit_points.append("Card & Container Aesthetics: Add sleek border-radius (8-16px) and ambient neon box-shadows (0 0 20px rgba(...)) for high-end depth.")
+
+            if "<canvas" in content_lower:
+                if "shadowblur" not in content_lower:
+                    audit_points.append("Canvas Bloom & Glow: Use ctx.shadowBlur and ctx.shadowColor for radiant arcade neon glow on sprites/food/snake.")
+                if "roundrect" not in content_lower and "arc(" not in content_lower:
+                    audit_points.append("Rounded Geometry: Render segments with rounded corners or pill shapes instead of flat jagged squares.")
+
+            if "display: flex" not in content_lower and "grid" not in content_lower:
+                audit_points.append("Layout Structure: Use Flexbox/Grid centering with max-width containers and responsive scaling.")
+
+            if "backdrop-filter" not in content_lower:
+                audit_points.append("Frosted Glass UI: Use glassmorphism HUD cards (backdrop-filter: blur(12px), background: rgba(..., 0.2), 1px subtle border).")
+
+            report = f"Visual UI Inspection Report for '{display_path}':\n"
+            if shot_captured:
+                report += f"- Headless Screenshot: Captured successfully ({shot_file})\n"
+            if ai_critique:
+                report += f"\n[AI Visual Critique ({active_vision})]:\n{ai_critique}\n"
+            elif not active_vision:
+                report += f"\n[Vision Model Status]: Offline text model active. (Tip: Run 'ollama pull moondream' for instant 1.7GB offline vision critique on any laptop).\n"
+            if audit_points:
+                report += "\n[Automated Aesthetic & Modern Design Audit]:\n" + "\n".join(f"- {pt}" for pt in audit_points)
+
+            report += (
+                f"\n\nActionable Implementation Instructions:\n"
+                f"Use 'edit_file' to upgrade {display_path} with modern CSS styling, glassmorphism HUD badges, vibrant canvas glow, "
+                f"and smooth responsive centering. Once updated, invoke 'open_browser' to verify."
+            )
+            return report
 
         elif name in ("edit_file", "patch_file"):
             path = args.get("path", "")
@@ -1403,6 +1519,14 @@ class Agent:
                     feedback += f"Web research complete. You have the needed information and palettes. Now invoke 'write_file' IMMEDIATELY to create '{target_f}'. Do NOT call search_web or fetch_web again."
                 else:
                     feedback += "Web research complete. Proceed to implement the solution or create the file using write_file."
+            elif name in ("inspect_ui", "screenshot_ui"):
+                target_f = args.get("path") or args.get("file") or args.get("url") or ""
+                feedback += (
+                    f"Visual UI inspection complete for '{target_f}'. "
+                    f"Now invoke 'edit_file' with surgical modifications to upgrade '{target_f}' with modern visual design, "
+                    f"glassmorphism, vibrant neon glow, and responsive layout based on the critique above. "
+                    f"Once updated, invoke 'open_browser' to verify."
+                )
             elif name == "open_browser":
                 feedback += "Browser launched successfully. If the requested task is complete, provide your concise final response directly without calling any tools."
             else:
@@ -1571,6 +1695,14 @@ def main():
             else:
                 print(f"{GRAY}Usage: /fix <filename> [optional issue description]{RESET}\n")
                 continue
+        elif user_input.lower().startswith(("/ui", "/inspect")):
+            parts = user_input.split(maxsplit=1)
+            target_arg = parts[1].strip() if len(parts) > 1 else ""
+            if target_arg:
+                user_input = f"inspect_ui {target_arg} and upgrade its visual styling and aesthetics"
+            else:
+                print(f"{GRAY}Usage: /ui <filename.html> - captures headless screenshot, audits aesthetics & upgrades UI{RESET}\n")
+                continue
         elif user_input.lower().startswith("/model"):
             parts = user_input.split()
             if len(parts) > 1:
@@ -1582,6 +1714,7 @@ def main():
 {BOLD}Interactive Slash Commands:{RESET}
   {CYAN}cd <dir>{RESET}       Change current working directory (e.g. `cd ~/Downloads`)
   {CYAN}/fix <file>{RESET}    Run automated static diagnostics & autonomously fix file
+  {CYAN}/ui <file>{RESET}     Capture headless screenshot, audit aesthetics & upgrade UI
   {CYAN}/models{RESET}        Interactive arrow-key menu to switch Ollama models
   {CYAN}/auto{RESET}          Toggle between Permission Mode and Auto-Approve Mode
   {CYAN}/diff{RESET}          Show current uncommitted git diff

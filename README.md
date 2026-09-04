@@ -90,6 +90,7 @@ lc
 | **👑 Flagship Intelligence** | `qwen2.5-coder:32b` | ~20–24 GB | Near Claude 3.5 Sonnet level local intelligence | `lc -m qwen2.5-coder:32b` |
 | **🔬 Advanced Reasoning** | `deepseek-coder-v2` | ~10–16 GB | DeepSeek MoE code intelligence | `lc -m deepseek-coder-v2` |
 | **🪶 Ultra-Lightweight** | `qwen2.5-coder:1.5b` | ~2–3 GB | Low-spec laptops & budget CPUs | `lc -m qwen2.5-coder:1.5b` |
+| **👁️ Offline Vision** | `moondream` | ~1.7–2 GB | CPU-friendly UI critique & screenshot analysis | `lc /ui <file.html>` |
 
 ---
 
@@ -184,19 +185,27 @@ lc -y "fix snake.html canvas is blank"
 ```
 `lc` automatically runs zero-dependency static diagnostics (DOM lifecycle checks, Python compilation, JS syntax validation) on the target file, feeds the exact error report to the local model, and guides it to surgically patch the code with `edit_file` and launch the browser or test suite!
 
-### 3. Test Suites & Pytest Self-Healing
+### 3. Visual UI Inspection & Aesthetic Auditing (100% Offline & Private)
+```bash
+lc -y "inspect_ui snake.html and upgrade aesthetics"
+# Or inside interactive mode:
+/ui snake.html
+```
+`lc` captures a headless 1280x800 screenshot via isolated browser profiles, triggers lightweight local vision models (such as `moondream` ~1.7GB via Ollama) if installed, runs automated DOM/CSS aesthetic heuristics (typography, neon glow, glassmorphism, responsive layout), and autonomously applies modern visual upgrades!
+
+### 4. Test Suites & Pytest Self-Healing
 
 ```bash
 lc -y "Run pytest, find all failing tests, patch the source code, and verify they pass."
 ```
 
-### 4. Web Research & Implementation
+### 5. Web Research & Implementation
 
 ```bash
 lc -y "Search the web for how to implement WebSocket connection pooling in FastAPI and add it to src/server.py."
 ```
 
-### 5. Codebase Exploration & Refactoring
+### 6. Codebase Exploration & Refactoring
 
 ```bash
 lc "Find all deprecated function calls in this repository and refactor them."
@@ -211,6 +220,7 @@ Inside the interactive chat:
 | Command | Action |
 |---|---|
 | `/fix <file>` | Run automated static diagnostics & autonomously fix target file |
+| `/ui <file>` | Capture headless screenshot, audit aesthetics & upgrade UI |
 | `/models` | Interactive arrow-key menu to switch Ollama models |
 | `/model <name>` | Switch active model directly (e.g. `/model deepseek-r1:8b`) |
 | `/auto` or `/perm` | Toggle between **Permission Mode** and **Auto Mode** |
@@ -226,6 +236,7 @@ Inside the interactive chat:
 
 | Tool | Description |
 |---|---|
+| `inspect_ui` | Captures headless screenshot, runs offline aesthetic audit, and critiques UI |
 | `search_web` | Searches the live web for documentation, packages, and solutions |
 | `fetch_web` | Scrapes and extracts clean readable text from any URL or GitHub repo |
 | `edit_file` | Surgically edits existing files with unified diff previews |
