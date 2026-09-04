@@ -176,19 +176,27 @@ lc
 ```
 *(or run `lc -y` to auto-approve actions)*
 
-### 2. Autonomous Debugging
+### 2. Autonomous Bug Fixing & Self-Healing
+```bash
+lc -y "fix snake.html"
+# Or run with specific issue:
+lc -y "fix snake.html canvas is blank"
+```
+`lc` automatically runs zero-dependency static diagnostics (DOM lifecycle checks, Python compilation, JS syntax validation) on the target file, feeds the exact error report to the local model, and guides it to surgically patch the code with `edit_file` and launch the browser or test suite!
+
+### 3. Test Suites & Pytest Self-Healing
 
 ```bash
 lc -y "Run pytest, find all failing tests, patch the source code, and verify they pass."
 ```
 
-### 3. Web Research & Implementation
+### 4. Web Research & Implementation
 
 ```bash
 lc -y "Search the web for how to implement WebSocket connection pooling in FastAPI and add it to src/server.py."
 ```
 
-### 4. Codebase Exploration & Refactoring
+### 5. Codebase Exploration & Refactoring
 
 ```bash
 lc "Find all deprecated function calls in this repository and refactor them."
@@ -202,6 +210,7 @@ Inside the interactive chat:
 
 | Command | Action |
 |---|---|
+| `/fix <file>` | Run automated static diagnostics & autonomously fix target file |
 | `/models` | Interactive arrow-key menu to switch Ollama models |
 | `/model <name>` | Switch active model directly (e.g. `/model deepseek-r1:8b`) |
 | `/auto` or `/perm` | Toggle between **Permission Mode** and **Auto Mode** |

@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.4.6"
+__version__ = "1.4.7"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -117,6 +117,9 @@ The tools are:
    - Do NOT lecture the user on basic code syntax. Apply the changes to the files, run tests or verification commands, and report concise outcomes.
 7. SELF-HEALING:
    - If tests fail, builds break, or commands error, inspect the error trace, patch the code, and re-run tests until passing.
+8. BUG FIXING & REPAIRS:
+   - When asked to fix, debug, or repair a file: read the file with `read_file`, locate the buggy snippet, and IMMEDIATELY invoke `edit_file` to update it on disk.
+   - NEVER stop after `read_file` to explain or describe the code without applying the fix.
 """
 
 
@@ -390,6 +393,57 @@ def print_diff(old_text, new_text, filename):
         print(f"{GRAY}... ({len(diff) - 25} more lines of diff){RESET}")
 
 
+def validate_code(path, content):
+    """Automated pre-execution validator for common runtime and syntax bugs (zero dependencies).
+    Returns a list of diagnostic warning strings if issues are detected."""
+    issues = []
+    p_str = str(path).lower()
+
+    # 1. HTML / DOM checks
+    if p_str.endswith((".html", ".htm")):
+        content_lower = content.lower()
+        if "<head>" in content_lower and "</head>" in content_lower:
+            head_part = re.split(r"</head>", content, flags=re.IGNORECASE)[0].lower()
+            if "<script" in head_part:
+                if any(dom in head_part for dom in ("document.body", "document.getelementbyid", "document.queryselector")):
+                    if not any(safe in head_part for safe in ("domcontentloaded", "window.onload", "onload", "defer")):
+                        issues.append(
+                            "DOM Lifecycle Bug: <script> executes in <head> and accesses document.body before the body exists. "
+                            "Wrap your script in window.addEventListener('DOMContentLoaded', () => { ... }) or move <script> inside <body>."
+                        )
+
+    # 2. Python syntax checks
+    elif p_str.endswith(".py"):
+        try:
+            compile(content, path, "exec")
+        except SyntaxError as e:
+            issues.append(f"Python SyntaxError on line {e.lineno}: {e.msg}")
+        except Exception as e:
+            issues.append(f"Python compile error: {e}")
+
+    # 3. JavaScript checks (if node is installed)
+    elif p_str.endswith(".js"):
+        if subprocess.run("which node", shell=True, capture_output=True).returncode == 0:
+            try:
+                res = subprocess.run(["node", "-c", "-e", content], capture_output=True, text=True, timeout=5)
+                if res.returncode != 0 and res.stderr:
+                    first_err = res.stderr.strip().splitlines()[0]
+                    issues.append(f"JavaScript Syntax Error: {first_err}")
+            except Exception:
+                pass
+
+    # 4. Shell syntax checks
+    elif p_str.endswith(".sh"):
+        try:
+            res = subprocess.run(["bash", "-n", "-c", content], capture_output=True, text=True, timeout=5)
+            if res.returncode != 0 and res.stderr:
+                issues.append(f"Bash Syntax Error: {res.stderr.strip().splitlines()[0]}")
+        except Exception:
+            pass
+
+    return issues
+
+
 class Agent:
     def __init__(self, model="qwen2.5-coder:7b", host="http://127.0.0.1:11434", context=2048, temp=0.2, auto=False):
         self.model = model
@@ -536,7 +590,17 @@ class Agent:
 
                 p.write_text(new_text, encoding="utf-8")
                 print(f"   {GREEN}✓ Successfully updated '{display_path}'{RESET}")
-                return f"File '{display_path}' successfully edited."
+                issues = validate_code(display_path, new_text)
+                if issues:
+                    print(f"   {YELLOW}⚠️  Diagnostics detected issues in '{display_path}':{RESET}")
+                    for iss in issues:
+                        print(f"      {RED}• {iss}{RESET}")
+                    return (
+                        f"File '{display_path}' updated, but automated code diagnostics detected issues:\n"
+                        + "\n".join(f"- {iss}" for iss in issues)
+                        + f"\nCRITICAL: You must invoke edit_file immediately to fix these diagnostic issues before opening or finishing."
+                    )
+                return f"File '{display_path}' successfully edited and verified (0 diagnostic errors)."
             except Exception as e:
                 return f"Error editing '{display_path}': {e}"
 
@@ -560,6 +624,16 @@ class Agent:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(content, encoding="utf-8")
                 print(f"   {GREEN}✓ Written '{display_path}'{RESET}")
+                issues = validate_code(display_path, content)
+                if issues:
+                    print(f"   {YELLOW}⚠️  Diagnostics detected issues in '{display_path}':{RESET}")
+                    for iss in issues:
+                        print(f"      {RED}• {iss}{RESET}")
+                    return (
+                        f"File '{display_path}' written ({len(content)} bytes), but automated code diagnostics detected issues:\n"
+                        + "\n".join(f"- {iss}" for iss in issues)
+                        + f"\nCRITICAL: You must invoke edit_file immediately to fix these diagnostic issues before opening or finishing."
+                    )
                 return f"File '{display_path}' written successfully ({len(content)} bytes)."
             except Exception as e:
                 return f"Error writing file '{display_path}': {e}"
@@ -588,7 +662,16 @@ class Agent:
                     lines = lines[:count]
                 numbered = [f"{i + (start or 1):4d} | {line}" for i, line in enumerate(lines)]
                 print(f"   {GRAY}Read {len(lines)}/{total} lines{RESET}")
-                return "\n".join(numbered) or "(empty file)"
+                full_text = p.read_text(encoding="utf-8", errors="replace")
+                issues = validate_code(display_path, full_text)
+                res_out = "\n".join(numbered) or "(empty file)"
+                if issues:
+                    res_out += (
+                        f"\n\n[Automated Static Diagnostics on {display_path}]:\n"
+                        + "\n".join(f"- {iss}" for iss in issues)
+                        + f"\nCRITICAL: Now invoke edit_file to surgically update '{display_path}' and resolve these diagnostic errors. Do NOT explain without editing."
+                    )
+                return res_out
             except Exception as e:
                 return f"Error reading file '{display_path}': {e}"
 
@@ -1079,6 +1162,33 @@ class Agent:
                 self.history.append({"role": "assistant", "content": res})
             return
 
+        # Automated Pre-Execution Diagnostic Hook for bug fix requests
+        fix_match = re.search(r"\b(?:fix|repair|debug|solve)\b.*?\b([~./\w-]+\.(?:html?|py|js|sh))\b", user_prompt, re.IGNORECASE)
+        if fix_match:
+            cand = Path(os.path.expanduser(fix_match.group(1)))
+            if not cand.is_absolute():
+                cand = (Path(os.getcwd()) / cand).resolve()
+            if cand.is_file():
+                try:
+                    f_content = cand.read_text(encoding="utf-8", errors="replace")
+                    issues = validate_code(str(cand), f_content)
+                    if issues:
+                        diag_msg = "\n".join(f"- {iss}" for iss in issues)
+                        user_prompt += (
+                            f"\n\n[Automated Static Diagnostics on {cand.name}]:\n{diag_msg}\n"
+                            f"Instructions: Use read_file to inspect {cand.name}, then use edit_file to surgically resolve all diagnostic issues. Once fixed, open it in the browser if it is an HTML file."
+                        )
+                        print(f"\n{YELLOW}🔍 Diagnostics found {len(issues)} issue(s) in {cand.name}:{RESET}")
+                        for iss in issues:
+                            print(f"   {RED}• {iss}{RESET}")
+                    else:
+                        user_prompt += (
+                            f"\n\n[Target File: {cand.name}]\n"
+                            f"Instructions: Use read_file to inspect {cand.name}, identify the reported bug or issue, and use edit_file to resolve it."
+                        )
+                except Exception:
+                    pass
+
         # Tier 3: Full Autonomous Tool Agent
         self.history.append({"role": "user", "content": user_prompt})
         step = 1
@@ -1097,6 +1207,20 @@ class Agent:
             name, args, is_tool = self.extract_tool_call(res, user_prompt=user_prompt, step=step)
 
             if not is_tool:
+                # Nudge guard: If this is a bug fix request and the model hasn't applied edit_file/write_file yet
+                if fix_match and not any(sig[0] in ("edit_file", "write_file") for sig in recent_tool_sigs) and step <= 3:
+                    cand = Path(os.path.expanduser(fix_match.group(1)))
+                    self.history.append({
+                        "role": "user",
+                        "content": (
+                            f"You inspected {cand.name}, but you have not applied the fix to disk yet. "
+                            f"You MUST invoke 'edit_file' now with the exact target snippet from {cand.name} "
+                            f"to surgically resolve the issue. Do NOT provide explanations without modifying the file."
+                        )
+                    })
+                    step += 1
+                    continue
+
                 if not was_streamed and res.strip():
                     if not re.search(r'^\s*(?:```|\{\s*"name")', res):
                         print(f"\n{BOLD}{CYAN}Qwen:{RESET} {res.strip()}")
@@ -1118,10 +1242,34 @@ class Agent:
             # Construct dynamic next-step prompt to maintain chaining for 7B models
             feedback = f"[Result of {name}]:\n{result}\n"
             p_lower = user_prompt.lower()
-            if name in ("write_file", "edit_file"):
+            if "CRITICAL: You must invoke edit_file" in result or "diagnostics detected issues" in result.lower():
                 target_f = args.get("path", "")
-                if any(w in p_lower for w in ("open", "browser", "launch", "play", "view")) and (target_f.endswith((".html", ".htm")) or "html" in p_lower):
-                    feedback += f"The user requested to open/launch this file in the desktop browser. Invoke 'open_browser' now with args: {{\"url\": \"{target_f}\"}}."
+                feedback += f"Automated diagnostics detected issues in '{target_f}'. You MUST invoke 'edit_file' now to resolve these errors before any other action."
+            elif name == "read_file":
+                target_f = args.get("path", "")
+                full_p = Path(os.path.expanduser(target_f))
+                if not full_p.is_absolute():
+                    full_p = (Path(os.getcwd()) / full_p).resolve()
+                file_issues = []
+                if full_p.is_file():
+                    try:
+                        file_issues = validate_code(str(full_p), full_p.read_text(encoding="utf-8", errors="replace"))
+                    except Exception:
+                        pass
+                if file_issues:
+                    feedback += (
+                        f"File '{target_f}' has been read. Automated static diagnostics detected issues:\n"
+                        + "\n".join(f"- {iss}" for iss in file_issues)
+                        + f"\nYou MUST invoke 'edit_file' now with the exact target code snippet to fix these issues. Do NOT stop or summarize without editing."
+                    )
+                elif any(w in p_lower for w in ("fix", "repair", "debug", "solve", "bug")):
+                    feedback += f"File '{target_f}' has been read. You MUST invoke 'edit_file' now with the exact target snippet from the file to fix the reported issue. Do NOT just summarize the code."
+                else:
+                    feedback += f"File '{target_f}' read successfully. Proceed with the necessary modification via edit_file or command execution."
+            elif name in ("write_file", "edit_file"):
+                target_f = args.get("path", "")
+                if (target_f.endswith((".html", ".htm")) or "html" in p_lower) and any(w in p_lower for w in ("open", "browser", "launch", "play", "view", "game", "snake", "fix")):
+                    feedback += f"File '{target_f}' has been updated on disk. Invoke 'open_browser' now with args: {{\"url\": \"{target_f}\"}} to verify the application in the desktop browser."
                 elif any(w in p_lower for w in ("run", "test", "execute", "check")) and not any(w in p_lower for w in ("do not run", "don't run", "no run")):
                     feedback += "The user requested to run or test the code. Invoke 'run_command' now to execute and verify."
                 else:
@@ -1294,6 +1442,13 @@ def main():
                 agent.model = chosen_model
                 print(f"{GREEN}Active model updated to:{RESET} {BOLD}{agent.model}{RESET}\n")
             continue
+        elif user_input.lower().startswith("/fix"):
+            target_arg = user_input[4:].strip()
+            if target_arg:
+                user_input = f"fix {target_arg}"
+            else:
+                print(f"{GRAY}Usage: /fix <filename> [optional issue description]{RESET}\n")
+                continue
         elif user_input.lower().startswith("/model"):
             parts = user_input.split()
             if len(parts) > 1:
@@ -1304,6 +1459,7 @@ def main():
             print(f"""
 {BOLD}Interactive Slash Commands:{RESET}
   {CYAN}cd <dir>{RESET}       Change current working directory (e.g. `cd ~/Downloads`)
+  {CYAN}/fix <file>{RESET}    Run automated static diagnostics & autonomously fix file
   {CYAN}/models{RESET}        Interactive arrow-key menu to switch Ollama models
   {CYAN}/auto{RESET}          Toggle between Permission Mode and Auto-Approve Mode
   {CYAN}/diff{RESET}          Show current uncommitted git diff
