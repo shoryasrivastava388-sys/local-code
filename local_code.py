@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.5.5"
+__version__ = "1.5.6"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -551,10 +551,12 @@ def _clean_arguments(args):
 
 
 class Agent:
-    def __init__(self, model="qwen2.5-coder:7b", host="http://127.0.0.1:11434", context=2048, temp=0.2, auto=False):
+    def __init__(self, model="qwen2.5-coder:7b", host="http://127.0.0.1:11434", context=4096, temp=0.2, auto=False):
         self.model = model
         self.host = host.rstrip("/")
         self.context = context
+        if any(k in str(model).lower() for k in ("qwen3.5", "deepseek", "r1", "think")) and self.context < 4096:
+            self.context = 4096
         self.temp = temp
         self.auto = auto
         self.history = [{"role": "system", "content": get_system_prompt()}]
@@ -877,16 +879,27 @@ class Agent:
                 old_text_norm = old_text.replace("\r\n", "\n")
                 replacement_norm = replacement.replace("\r\n", "\n")
 
-                if target_norm not in old_text_norm:
-                    norm_target = "\n".join(line.strip() for line in target_norm.strip().splitlines())
-                    norm_file = "\n".join(line.strip() for line in old_text_norm.splitlines())
-                    if norm_target not in norm_file:
+                new_text = None
+                if target_norm in old_text_norm:
+                    if old_text_norm.count(target_norm) > 1:
+                        return f"Error: Target snippet occurs {old_text_norm.count(target_norm)} times in '{display_path}'. Include more surrounding context lines to make it unique."
+                    new_text = old_text_norm.replace(target_norm, replacement_norm, 1)
+                else:
+                    # Line-by-line whitespace-insensitive fuzzy matching for minor indentation differences
+                    target_lines = [l.strip() for l in target_norm.strip().splitlines() if l.strip()]
+                    file_lines = old_text_norm.splitlines()
+                    match_start = -1
+                    if target_lines:
+                        for i in range(len(file_lines) - len(target_lines) + 1):
+                            if [file_lines[i + j].strip() for j in range(len(target_lines))] == target_lines:
+                                match_start = i
+                                break
+                    if match_start != -1:
+                        before = file_lines[:match_start]
+                        after = file_lines[match_start + len(target_lines):]
+                        new_text = "\n".join(before + [replacement_norm] + after)
+                    else:
                         return f"Error: Target snippet not found in '{display_path}'. Please read the file with read_file first to see the exact lines."
-
-                if old_text_norm.count(target_norm) > 1:
-                    return f"Error: Target snippet occurs {old_text_norm.count(target_norm)} times in '{display_path}'. Include more surrounding context lines to make it unique."
-
-                new_text = old_text_norm.replace(target_norm, replacement_norm, 1)
 
                 # Show colored diff before applying
                 print_diff(old_text_norm, new_text, display_path)
@@ -1280,7 +1293,7 @@ class Agent:
             "stream": True,
             "options": {
                 "num_ctx": self.context,
-                "num_predict": min(self.context, 2048),
+                "num_predict": min(self.context, 4096),
                 "temperature": self.temp,
                 "repeat_penalty": 1.15,
                 "repeat_last_n": 64,
@@ -1295,121 +1308,141 @@ class Agent:
             headers={"Content-Type": "application/json"}
         )
 
-        accumulated = ""
-        in_tool_block = False
-        printed_prefix = False
-        token_count = 0
-        preamble_buffer = ""
+        for attempt in range(2):
+            accumulated = ""
+            in_tool_block = False
+            printed_prefix = False
+            token_count = 0
+            preamble_buffer = ""
 
-        # Background animated spinner while CPU is prefilling / evaluating prompt
-        stop_spinner = threading.Event()
-        start_time = time.time()
-        label = spinner_label or ("Planning actions & tools..." if step == 1 else "Thinking & evaluating prompt...")
+            # Background animated spinner while CPU is prefilling / evaluating prompt
+            stop_spinner = threading.Event()
+            start_time = time.time()
+            label = spinner_label or ("Planning actions & tools..." if step == 1 else "Thinking & evaluating prompt...")
+            current_thought = [None]
 
-        def spin():
-            spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            i = 0
-            while not stop_spinner.is_set():
-                elapsed = int(time.time() - start_time)
-                sys.stdout.write(f"\r{DIM}{spinner_frames[i % len(spinner_frames)]} [Step {step}] {label} ({elapsed}s){RESET}\033[K")
-                sys.stdout.flush()
-                i += 1
-                time.sleep(0.1)
+            def spin():
+                spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+                i = 0
+                while not stop_spinner.is_set():
+                    elapsed = int(time.time() - start_time)
+                    display_label = current_thought[0] or label
+                    sys.stdout.write(f"\r{DIM}{spinner_frames[i % len(spinner_frames)]} [Step {step}] {display_label} ({elapsed}s){RESET}\033[K")
+                    sys.stdout.flush()
+                    i += 1
+                    time.sleep(0.1)
 
-        spin_thread = threading.Thread(target=spin, daemon=True)
-        spin_thread.start()
+            spin_thread = threading.Thread(target=spin, daemon=True)
+            spin_thread.start()
 
-        try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                for raw in resp:
-                    if not raw.strip():
-                        continue
-                    chunk = json.loads(raw.decode("utf-8"))
-                    token = chunk.get("message", {}).get("content", "")
-                    if not token:
-                        continue
+            try:
+                with urllib.request.urlopen(req, timeout=300) as resp:
+                    for raw in resp:
+                        if not raw.strip():
+                            continue
+                        chunk = json.loads(raw.decode("utf-8"))
+                        msg = chunk.get("message", {})
+                        token = msg.get("content", "")
+                        thinking_token = msg.get("thinking", "")
 
-                    if not stop_spinner.is_set():
-                        stop_spinner.set()
-                        spin_thread.join(timeout=0.2)
-                        sys.stdout.write(f"\r\033[K")
-                        sys.stdout.flush()
+                        if thinking_token:
+                            clean_th = re.sub(r"[*#_`]", "", thinking_token).strip()
+                            if clean_th:
+                                snip = clean_th.replace("\n", " ").strip()
+                                if len(snip) > 38:
+                                    snip = snip[:35] + "..."
+                                current_thought[0] = f"Thinking: {snip}"
+                            continue
 
-                    accumulated += token
-                    token_count += 1
+                        if not token:
+                            continue
 
-                    if (
-                        accumulated.strip().startswith("```")
-                        or accumulated.strip().startswith("{")
-                        or "```" in accumulated
-                        or '{"name"' in accumulated
-                        or '{"name":' in accumulated
-                    ):
-                        in_tool_block = True
-
-                    if in_tool_block:
-                        if printed_prefix:
+                        if not stop_spinner.is_set():
+                            stop_spinner.set()
+                            spin_thread.join(timeout=0.2)
                             sys.stdout.write(f"\r\033[K")
-                            printed_prefix = False
-                        preamble_buffer = ""
-                        sys.stdout.write(f"\r{CYAN}⚡ [Step {step}] Writing code directly to disk... ({token_count} tokens){RESET}\033[K")
-                        sys.stdout.flush()
+                            sys.stdout.flush()
 
-                        # Repetition loop detector: if a phrase repeats 3+ times in the tail, break immediately
-                        if len(accumulated) > 150:
-                            tail = accumulated[-350:]
-                            is_looping = False
-                            for pat_len in range(12, 75):
-                                if len(tail) >= pat_len * 3:
-                                    pat = tail[-pat_len:]
-                                    if tail.endswith(pat * 3):
-                                        while accumulated.endswith(pat):
-                                            accumulated = accumulated[:-len(pat)]
-                                        is_looping = True
-                                        break
-                            if is_looping:
-                                break
+                        accumulated += token
+                        token_count += 1
 
-                        # Early stop: break immediately as soon as a complete tool call or code block is formed
-                        if re.search(r"```[a-zA-Z0-9_-]*\s*\n.+?\n```", accumulated, flags=re.DOTALL):
-                            _, _, valid = self.extract_tool_call(accumulated, user_prompt=user_prompt, step=step)
-                            if valid:
-                                break
-                        elif '{"name"' in accumulated or '{"name":' in accumulated:
-                            _, _, valid = self.extract_tool_call(accumulated, user_prompt=user_prompt, step=step)
-                            if valid:
-                                break
-                    else:
-                        preamble_buffer += token
-                        if len(preamble_buffer) >= 80:
-                            if not printed_prefix and preamble_buffer.strip():
-                                sys.stdout.write(f"\r\033[K\n{BOLD}{CYAN}Qwen:{RESET} ")
-                                printed_prefix = True
+                        if (
+                            accumulated.strip().startswith("```")
+                            or accumulated.strip().startswith("{")
+                            or "```" in accumulated
+                            or '{"name"' in accumulated
+                            or '{"name":' in accumulated
+                        ):
+                            in_tool_block = True
+
+                        if in_tool_block:
                             if printed_prefix:
-                                sys.stdout.write(preamble_buffer)
-                                sys.stdout.flush()
+                                sys.stdout.write(f"\r\033[K")
+                                printed_prefix = False
                             preamble_buffer = ""
+                            sys.stdout.write(f"\r{CYAN}⚡ [Step {step}] Writing code directly to disk... ({token_count} tokens){RESET}\033[K")
+                            sys.stdout.flush()
 
-            if in_tool_block:
-                sys.stdout.write(f"\r\033[K")
-                sys.stdout.flush()
-            else:
-                if preamble_buffer:
-                    if not printed_prefix and preamble_buffer.strip():
-                        sys.stdout.write(f"\r\033[K\n{BOLD}{CYAN}Qwen:{RESET} ")
-                        printed_prefix = True
+                            # Repetition loop detector: if a phrase repeats 3+ times in the tail, break immediately
+                            if len(accumulated) > 150:
+                                tail = accumulated[-350:]
+                                is_looping = False
+                                for pat_len in range(12, 75):
+                                    if len(tail) >= pat_len * 3:
+                                        pat = tail[-pat_len:]
+                                        if tail.endswith(pat * 3):
+                                            while accumulated.endswith(pat):
+                                                accumulated = accumulated[:-len(pat)]
+                                            is_looping = True
+                                            break
+                                if is_looping:
+                                    break
+
+                            # Early stop: break immediately as soon as a complete tool call or code block is formed
+                            if re.search(r"```[a-zA-Z0-9_-]*\s*\n.+?\n```", accumulated, flags=re.DOTALL):
+                                _, _, valid = self.extract_tool_call(accumulated, user_prompt=user_prompt, step=step)
+                                if valid:
+                                    break
+                            elif '{"name"' in accumulated or '{"name":' in accumulated:
+                                _, _, valid = self.extract_tool_call(accumulated, user_prompt=user_prompt, step=step)
+                                if valid:
+                                    break
+                        else:
+                            preamble_buffer += token
+                            if len(preamble_buffer) >= 80:
+                                if not printed_prefix and preamble_buffer.strip():
+                                    sys.stdout.write(f"\r\033[K\n{BOLD}{CYAN}Qwen:{RESET} ")
+                                    printed_prefix = True
+                                if printed_prefix:
+                                    sys.stdout.write(preamble_buffer)
+                                    sys.stdout.flush()
+                                preamble_buffer = ""
+
+                if in_tool_block:
+                    sys.stdout.write(f"\r\033[K")
+                    sys.stdout.flush()
+                else:
+                    if preamble_buffer:
+                        if not printed_prefix and preamble_buffer.strip():
+                            sys.stdout.write(f"\r\033[K\n{BOLD}{CYAN}Qwen:{RESET} ")
+                            printed_prefix = True
+                        if printed_prefix:
+                            sys.stdout.write(preamble_buffer)
+                            sys.stdout.flush()
                     if printed_prefix:
-                        sys.stdout.write(preamble_buffer)
-                        sys.stdout.flush()
-                if printed_prefix:
-                    print()
+                        print()
 
-            return accumulated, printed_prefix
-        except Exception as e:
-            print(f"\n{RED}Inference error: {e}{RESET}")
-            return "", False
-        finally:
-            stop_spinner.set()
+                return accumulated, printed_prefix
+            except Exception as e:
+                stop_spinner.set()
+                err_str = str(e).lower()
+                if attempt == 0 and any(w in err_str for w in ("closed connection", "connection reset", "broken pipe", "eof")):
+                    time.sleep(1.5)
+                    continue
+                print(f"\n{RED}Inference error: {e}{RESET}")
+                return "", False
+            finally:
+                stop_spinner.set()
 
     def get_fast_path_reply(self, prompt):
         """Instant (<1ms) response for conversational greetings, courtesy, gratitude, and identity.
@@ -1571,7 +1604,7 @@ class Agent:
 
             if not is_tool:
                 # Nudge guard: If this is a bug fix request and the model hasn't applied edit_file/write_file yet
-                if fix_match and not any(sig[0] in ("edit_file", "write_file") for sig in recent_tool_sigs) and step <= 3:
+                if fix_match and not any(sig[0] in ("edit_file", "write_file") for sig in recent_tool_sigs) and step <= 5:
                     cand_name = fix_match.name if isinstance(fix_match, Path) else str(fix_match)
                     self.history.append({
                         "role": "user",
@@ -1594,25 +1627,49 @@ class Agent:
 
             # Loop detection / anti-repetition guard:
             sig = (name, json.dumps(args, sort_keys=True))
+            p_lower = user_prompt.lower()
             if recent_tool_sigs.count(sig) >= 1 and name in ("search_web", "fetch_web"):
                 fn_match = re.search(r"([~./\w_-]+/[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c)|\b[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c))\b", user_prompt, re.IGNORECASE)
                 target_file = fn_match.group(1) if fn_match else "the requested code file"
                 result = f"Loop prevented: Web research is already complete. Proceed IMMEDIATELY to invoke 'write_file' to create '{target_file}' with your code implementation. Do NOT search or browse the web again."
                 print(f"   {YELLOW}⚡ Research complete. Transitioning directly to code creation...{RESET}")
+                recent_tool_sigs.append(sig)
             elif recent_tool_sigs.count(sig) >= 1 and name == "read_file":
                 target_file = args.get("path", "")
-                if (target_file.endswith((".html", ".htm")) or "html" in p_lower) and any(w in p_lower for w in ("open", "browser", "launch", "play", "view", "test")):
+                full_p = Path(os.path.expanduser(target_file))
+                if not full_p.is_absolute():
+                    full_p = (Path(os.getcwd()) / full_p).resolve()
+                issues = []
+                if full_p.is_file():
+                    try:
+                        issues = validate_code(str(full_p), full_p.read_text(encoding="utf-8", errors="replace"))
+                    except Exception:
+                        pass
+                if issues:
+                    result = (
+                        f"Loop prevented: You have already read '{target_file}'. "
+                        f"Automated static diagnostics detected {len(issues)} critical error(s) in this file:\n"
+                        + "\n".join(f"- {iss}" for iss in issues)
+                        + f"\nYou MUST invoke 'edit_file' NOW to surgically fix these errors. Do NOT call 'read_file' again."
+                    )
+                    if recent_tool_sigs.count(sig) >= 2:
+                        result += (
+                            f"\nCRITICAL: STOP calling read_file. Output a single JSON tool call to edit_file:\n"
+                            f'{{"name": "edit_file", "arguments": {{"path": "{target_file}", "target": "<exact old code to replace>", "replacement": "<clean fixed code>"}}}}'
+                        )
+                    print(f"   {YELLOW}⚡ File already read. Forcing transition to edit_file ({len(issues)} issue(s) detected)...{RESET}")
+                elif (target_file.endswith((".html", ".htm")) or "html" in p_lower) and any(w in p_lower for w in ("open", "browser", "launch", "play", "view", "test")):
                     result = f"Loop prevented: '{target_file}' is already read and verified with 0 errors. Proceed IMMEDIATELY to invoke 'open_browser' with args: {{\"url\": \"{target_file}\"}} to test it in the browser."
-                    print(f"   {YELLOW}⚡ File already verified. Transitioning directly to browser test...{RESET}")
+                    print(f"   {YELLOW}⚡ File verified (0 errors). Transitioning directly to browser test...{RESET}")
                 else:
-                    result = f"Loop prevented: '{target_file}' is already read. Proceed to edit the file or execute your next action."
+                    result = f"Loop prevented: '{target_file}' is already read. Proceed to invoke 'edit_file' to modify the file or proceed to your next action."
+                recent_tool_sigs.append(sig)
             else:
                 recent_tool_sigs.append(sig)
                 result = self.execute_tool(name, args, user_prompt=user_prompt)
 
             # Construct dynamic next-step prompt to maintain chaining for 7B models
             feedback = f"[Result of {name}]:\n{result}\n"
-            p_lower = user_prompt.lower()
             if "CRITICAL: You must invoke edit_file" in result or "diagnostics detected issues" in result.lower():
                 target_f = args.get("path", "")
                 feedback += f"Automated diagnostics detected issues in '{target_f}'. You MUST invoke 'edit_file' now to resolve these errors before any other action."
@@ -1631,7 +1688,9 @@ class Agent:
                     feedback += (
                         f"File '{target_f}' has been read. Automated static diagnostics detected issues:\n"
                         + "\n".join(f"- {iss}" for iss in file_issues)
-                        + f"\nYou MUST invoke 'edit_file' now with the exact target code snippet to fix these issues. Do NOT stop or summarize without editing."
+                        + f"\nYou MUST invoke 'edit_file' now with the exact target code snippet to fix these issues on disk. "
+                        f"Format:\n```json\n{{\"name\": \"edit_file\", \"arguments\": {{\"path\": \"{target_f}\", \"target\": \"<exact code to replace>\", \"replacement\": \"<clean fixed code>\"}}}}\n```\n"
+                        f"Do NOT stop or summarize without editing."
                     )
                 elif any(w in p_lower for w in ("open", "browser", "launch", "play", "view", "test")) and (target_f.endswith((".html", ".htm")) or "html" in p_lower):
                     feedback += (
@@ -1707,7 +1766,7 @@ def main():
     parser.add_argument("prompt", nargs="*", help="Direct prompt to execute (non-interactive mode)")
     parser.add_argument("-m", "--model", default=default_model, help="Ollama model name (default: %(default)s)")
     parser.add_argument("-y", "--yes", action="store_true", help="Auto-approve all actions (Auto Mode)")
-    parser.add_argument("-c", "--context", type=int, default=2048, help="Context window size in tokens (default: 2048)")
+    parser.add_argument("-c", "--context", type=int, default=4096, help="Context window size in tokens (default: 4096)")
     parser.add_argument("-t", "--temp", type=float, default=0.2, help="Sampling temperature")
     parser.add_argument("--host", default=default_host, help="Ollama API base URL")
     parser.add_argument("-v", "--version", action="version", version=f"local-code (lc) {__version__} ({OS_NAME})")
@@ -1844,7 +1903,9 @@ def main():
             _, chosen_model = select_menu("Select an Ollama Model to activate:", menu_options, default_idx=current_idx)
             if chosen_model:
                 agent.model = chosen_model
-                print(f"{GREEN}Active model updated to:{RESET} {BOLD}{agent.model}{RESET}\n")
+                if any(k in chosen_model.lower() for k in ("qwen3.5", "deepseek", "r1", "think")) and agent.context < 4096:
+                    agent.context = 4096
+                print(f"{GREEN}Active model updated to:{RESET} {BOLD}{agent.model}{RESET} {GRAY}(Context: {agent.context}){RESET}\n")
             continue
         elif user_input.lower().startswith("/fix"):
             target_arg = user_input[4:].strip()
