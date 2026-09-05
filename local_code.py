@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.5.7"
+__version__ = "1.5.8"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -933,6 +933,9 @@ class Agent:
                         after = file_lines[match_start + len(target_lines):]
                         new_text = "\n".join(before + [replacement_norm] + after)
                     else:
+                        print(f"   {RED}✗ Target snippet not found in '{display_path}'{RESET}")
+                        if any(k in target_norm for k in ("<exact", "<clean", "<placeholder")):
+                            print(f"   {YELLOW}💡 Hint: Use real code lines from '{display_path}', not placeholder text.{RESET}")
                         return f"Error: Target snippet not found in '{display_path}'. Please read the file with read_file first to see the exact lines."
 
                 # Show colored diff before applying
@@ -940,6 +943,11 @@ class Agent:
 
                 if not self.ask_permission(f"modifications to '{display_path}'"):
                     return f"Editing '{display_path}' skipped by user."
+
+                # Auto-sanitize trailing commentary after </html>
+                if p.suffix.lower() in (".html", ".htm") and "</html>" in new_text.lower():
+                    end_idx = new_text.lower().rfind("</html>")
+                    new_text = new_text[:end_idx + 7].strip() + "\n"
 
                 p.write_text(new_text, encoding="utf-8")
                 print(f"   {GREEN}✓ Successfully updated '{display_path}'{RESET}")
@@ -984,6 +992,10 @@ class Agent:
                 return f"Writing '{display_path}' skipped by user."
             try:
                 p.parent.mkdir(parents=True, exist_ok=True)
+                # Auto-sanitize trailing commentary after </html>
+                if p.suffix.lower() in (".html", ".htm") and "</html>" in content.lower():
+                    end_idx = content.lower().rfind("</html>")
+                    content = content[:end_idx + 7].strip() + "\n"
                 p.write_text(content, encoding="utf-8")
                 print(f"   {GREEN}✓ Written '{display_path}'{RESET}")
                 issues = validate_code(display_path, content)
@@ -1609,6 +1621,15 @@ class Agent:
         if cand and cand.is_file():
             try:
                 f_content = cand.read_text(encoding="utf-8", errors="replace")
+                # Auto-heal trailing commentary/backticks after </html> for HTML files
+                if cand.suffix.lower() in (".html", ".htm") and "</html>" in f_content.lower():
+                    end_idx = f_content.lower().rfind("</html>")
+                    trailing_text = f_content[end_idx + 7:].strip()
+                    if trailing_text:
+                        f_content = f_content[:end_idx + 7].strip() + "\n"
+                        cand.write_text(f_content, encoding="utf-8")
+                        print(f"\n{GREEN}✓ Auto-sanitized {len(trailing_text)} characters of trailing commentary after </html>{RESET}")
+
                 issues = validate_code(str(cand), f_content)
                 if issues:
                     fix_match = cand
@@ -1707,8 +1728,7 @@ class Agent:
                     )
                     if recent_tool_sigs.count(sig) >= 2:
                         result += (
-                            f"\nCRITICAL: STOP calling read_file. Output a single JSON tool call to edit_file:\n"
-                            f'{{"name": "edit_file", "arguments": {{"path": "{target_file}", "target": "<exact old code to replace>", "replacement": "<clean fixed code>"}}}}'
+                            f"\nCRITICAL: STOP calling read_file. You MUST invoke 'edit_file' now with the real code lines to replace from '{target_file}'."
                         )
                     print(f"   {YELLOW}⚡ File already read. Forcing transition to edit_file ({len(issues)} issue(s) detected)...{RESET}")
                 elif (target_file.endswith((".html", ".htm")) or "html" in p_lower) and any(w in p_lower for w in ("open", "browser", "launch", "play", "view", "test")):
