@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.7.6"
+__version__ = "1.7.7"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -1025,6 +1025,15 @@ class Agent:
                             p.write_text(new_text, encoding="utf-8")
                             issues = []
                             print(f"   {GREEN}✓ Auto-balanced {diff} unclosed brace(s) in '{display_path}' (0 errors){RESET}")
+                    elif close_b > open_b and p.suffix.lower() in (".html", ".htm") and "</script>" in new_text:
+                        diff = close_b - open_b
+                        cand_text = re.sub(r'\}\s*</script>', '</script>', new_text)
+                        cand_issues = validate_code(display_path, cand_text)
+                        if not cand_issues:
+                            new_text = cand_text
+                            p.write_text(new_text, encoding="utf-8")
+                            issues = []
+                            print(f"   {GREEN}✓ Auto-balanced {diff} extra closing brace(s) in '{display_path}' (0 errors){RESET}")
                 if issues:
                     print(f"   {YELLOW}⚠️  Diagnostics detected issues in '{display_path}':{RESET}")
                     for iss in issues:
@@ -1102,6 +1111,15 @@ class Agent:
                             p.write_text(content, encoding="utf-8")
                             issues = []
                             print(f"   {GREEN}✓ Auto-balanced {diff} unclosed brace(s) in '{display_path}' (0 errors){RESET}")
+                    elif close_b > open_b and p.suffix.lower() in (".html", ".htm") and "</script>" in content:
+                        diff = close_b - open_b
+                        cand_content = re.sub(r'\}\s*</script>', '</script>', content)
+                        cand_issues = validate_code(display_path, cand_content)
+                        if not cand_issues:
+                            content = cand_content
+                            p.write_text(content, encoding="utf-8")
+                            issues = []
+                            print(f"   {GREEN}✓ Auto-balanced {diff} extra closing brace(s) in '{display_path}' (0 errors){RESET}")
                 if issues:
                     print(f"   {YELLOW}⚠️  Diagnostics detected issues in '{display_path}':{RESET}")
                     for iss in issues:
@@ -1851,6 +1869,14 @@ class Agent:
                         f_content = cand_content
                         cand.write_text(f_content, encoding="utf-8")
                         print(f"\n{GREEN}✓ Auto-balanced {diff} unclosed brace(s) in '{cand.name}' (0 errors){RESET}")
+                elif close_b > open_b and cand.suffix.lower() in (".html", ".htm") and "</script>" in f_content:
+                    diff = close_b - open_b
+                    cand_content = re.sub(r'\}\s*</script>', '</script>', f_content)
+                    cand_issues = validate_code(str(cand), cand_content)
+                    if not cand_issues:
+                        f_content = cand_content
+                        cand.write_text(f_content, encoding="utf-8")
+                        print(f"\n{GREEN}✓ Auto-balanced {diff} extra closing brace(s) in '{cand.name}' (0 errors){RESET}")
 
                 # Auto-heal dummy placeholder script tags causing mismatched script tags
                 if cand.suffix.lower() in (".html", ".htm") and "/* your code here */" in f_content.lower():
