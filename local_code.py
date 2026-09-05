@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.7.5"
+__version__ = "1.7.6"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -1008,6 +1008,23 @@ class Agent:
                 p.write_text(new_text, encoding="utf-8")
                 print(f"   {GREEN}✓ Successfully updated '{display_path}'{RESET}")
                 issues = validate_code(display_path, new_text)
+                if any("Unexpected end of input" in iss for iss in issues):
+                    open_b = new_text.count('{')
+                    close_b = new_text.count('}')
+                    if open_b > close_b:
+                        diff = open_b - close_b
+                        cand_text = new_text
+                        if p.suffix.lower() in (".html", ".htm") and "</script>" in new_text:
+                            idx = new_text.rfind("</script>")
+                            cand_text = new_text[:idx] + ("\n}" * diff) + "\n" + new_text[idx:]
+                        else:
+                            cand_text += ("\n}" * diff) + "\n"
+                        cand_issues = validate_code(display_path, cand_text)
+                        if not cand_issues:
+                            new_text = cand_text
+                            p.write_text(new_text, encoding="utf-8")
+                            issues = []
+                            print(f"   {GREEN}✓ Auto-balanced {diff} unclosed brace(s) in '{display_path}' (0 errors){RESET}")
                 if issues:
                     print(f"   {YELLOW}⚠️  Diagnostics detected issues in '{display_path}':{RESET}")
                     for iss in issues:
@@ -1068,6 +1085,23 @@ class Agent:
                 p.write_text(content, encoding="utf-8")
                 print(f"   {GREEN}✓ Written '{display_path}'{RESET}")
                 issues = validate_code(display_path, content)
+                if any("Unexpected end of input" in iss for iss in issues):
+                    open_b = content.count('{')
+                    close_b = content.count('}')
+                    if open_b > close_b:
+                        diff = open_b - close_b
+                        cand_content = content
+                        if p.suffix.lower() in (".html", ".htm") and "</script>" in content:
+                            idx = content.rfind("</script>")
+                            cand_content = content[:idx] + ("\n}" * diff) + "\n" + content[idx:]
+                        else:
+                            cand_content += ("\n}" * diff) + "\n"
+                        cand_issues = validate_code(display_path, cand_content)
+                        if not cand_issues:
+                            content = cand_content
+                            p.write_text(content, encoding="utf-8")
+                            issues = []
+                            print(f"   {GREEN}✓ Auto-balanced {diff} unclosed brace(s) in '{display_path}' (0 errors){RESET}")
                 if issues:
                     print(f"   {YELLOW}⚠️  Diagnostics detected issues in '{display_path}':{RESET}")
                     for iss in issues:
@@ -1800,6 +1834,23 @@ class Agent:
                         f_content += "\n</script>\n</body>\n</html>\n"
                         cand.write_text(f_content, encoding="utf-8")
                         print(f"\n{GREEN}✓ Auto-closed unclosed <script> tag in '{cand.name}'{RESET}")
+
+                # Auto-balance unclosed curly braces in HTML/JS if Unexpected end of input
+                open_b = f_content.count('{')
+                close_b = f_content.count('}')
+                if open_b > close_b:
+                    diff = open_b - close_b
+                    cand_content = f_content
+                    if cand.suffix.lower() in (".html", ".htm") and "</script>" in f_content:
+                        idx = f_content.rfind("</script>")
+                        cand_content = f_content[:idx] + ("\n}" * diff) + "\n" + f_content[idx:]
+                    else:
+                        cand_content += ("\n}" * diff) + "\n"
+                    cand_issues = validate_code(str(cand), cand_content)
+                    if not cand_issues:
+                        f_content = cand_content
+                        cand.write_text(f_content, encoding="utf-8")
+                        print(f"\n{GREEN}✓ Auto-balanced {diff} unclosed brace(s) in '{cand.name}' (0 errors){RESET}")
 
                 # Auto-heal dummy placeholder script tags causing mismatched script tags
                 if cand.suffix.lower() in (".html", ".htm") and "/* your code here */" in f_content.lower():
