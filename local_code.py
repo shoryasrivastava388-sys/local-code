@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.7.4"
+__version__ = "1.7.5"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -1815,7 +1815,7 @@ class Agent:
                     diag_msg = "\n".join(f"- {iss}" for iss in issues)
                     user_prompt += (
                         f"\n\n[Automated Static Diagnostics on {cand.name}]:\n{diag_msg}\n"
-                        f"Instructions: Use read_file to inspect {cand.name}, or use write_file / edit_file directly to resolve all diagnostic issues and make {cand.name} fully functional. Once fixed, open it in the browser if it is an HTML file."
+                        f"Instructions: You MUST invoke 'edit_file' (or 'write_file') now to resolve these diagnostic issues in {cand.name}. Do NOT call 'read_file' repeatedly. Apply the code fix directly to disk."
                     )
                     print(f"\n{YELLOW}🔍 Diagnostics found {len(issues)} issue(s) in {cand.name}:{RESET}")
                     for iss in issues:
@@ -1933,7 +1933,10 @@ class Agent:
                 result = f"Loop prevented: Web research is already complete. Proceed IMMEDIATELY to invoke 'write_file' to create '{target_file}' with your code implementation. Do NOT search or browse the web again."
                 print(f"   {YELLOW}⚡ Research complete. Transitioning directly to code creation...{RESET}")
                 recent_tool_sigs.append(sig)
-            elif len(recent_tool_sigs) >= 1 and recent_tool_sigs[-1] == sig and name == "read_file":
+            elif name == "read_file" and any(
+                prev_n == "read_file" and os.path.basename(json.loads(prev_a).get("path", "")) == os.path.basename(args.get("path", ""))
+                for prev_n, prev_a in recent_tool_sigs
+            ):
                 target_file = args.get("path", "")
                 full_p = Path(os.path.expanduser(target_file))
                 if not full_p.is_absolute():
@@ -1944,15 +1947,14 @@ class Agent:
                         issues = validate_code(str(full_p), full_p.read_text(encoding="utf-8", errors="replace"))
                     except Exception:
                         pass
-                read_count = recent_tool_sigs.count(sig)
                 if issues:
                     result = (
-                        f"Notice: You have ALREADY read '{target_file}'. DO NOT CALL read_file AGAIN. "
+                        f"Notice: You have ALREADY read '{target_file}'. Calling read_file again is PROHIBITED. "
                         f"Automated static diagnostics detected {len(issues)} critical error(s) in this file:\n"
                         + "\n".join(f"- {iss}" for iss in issues)
-                        + f"\nYou MUST invoke 'write_file' (with the complete corrected code) or 'edit_file' NOW to update '{target_file}' on disk."
+                        + f"\nYou MUST invoke 'edit_file' or 'write_file' NOW with the code changes to update '{target_file}' on disk."
                     )
-                    print(f"   {YELLOW}⚡ Consecutive read blocked. Directing to code update ({len(issues)} issue(s) detected)...{RESET}")
+                    print(f"   {YELLOW}⚡ Duplicate read blocked. Directing to code update ({len(issues)} issue(s) detected)...{RESET}")
                 elif (target_file.endswith((".html", ".htm")) or "html" in p_lower) and any(w in p_lower for w in ("open", "browser", "launch", "play", "view", "test")):
                     result = f"Notice: '{target_file}' is already read and verified with 0 errors. Proceed to invoke 'open_browser' with args: {{\"url\": \"{target_file}\"}} to test it in the browser."
                     print(f"   {YELLOW}⚡ File verified (0 errors). Transitioning directly to browser test...{RESET}")
