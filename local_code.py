@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.6.4"
+__version__ = "1.6.5"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -521,7 +521,7 @@ def validate_code(path, content):
                     "  });\n"
                     "}\n"
                     "const mockDOM = createMock('DOM');\n"
-                    "const sandbox = {\n"
+                    "const base = {\n"
                     "  window: mockDOM,\n"
                     "  document: mockDOM,\n"
                     "  console: console,\n"
@@ -535,9 +535,18 @@ def validate_code(path, content):
                     "  localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },\n"
                     "  sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} }\n"
                     "};\n"
-                    "sandbox.window.localStorage = sandbox.localStorage;\n"
-                    "sandbox.window.sessionStorage = sandbox.sessionStorage;\n"
-                    "sandbox.window.document = mockDOM;\n"
+                    "base.window.localStorage = base.localStorage;\n"
+                    "base.window.sessionStorage = base.sessionStorage;\n"
+                    "base.window.document = mockDOM;\n"
+                    "\n"
+                    "const sandbox = new Proxy(base, {\n"
+                    "  has(target, prop) { return true; },\n"
+                    "  get(target, prop) {\n"
+                    "    if (prop in target) return target[prop];\n"
+                    "    if (typeof prop === 'symbol') return undefined;\n"
+                    "    return mockDOM;\n"
+                    "  }\n"
+                    "});\n"
                     "vm.createContext(sandbox);\n"
                     "try {\n"
                     "  vm.runInContext(process.env.TEST_CODE, sandbox, { timeout: 2000 });\n"
