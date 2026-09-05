@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.7.7"
+__version__ = "1.7.8"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -59,9 +59,9 @@ def get_safe_default_context(model_name=""):
     """Calculate safe context tokens to prevent kernel OOM kills on memory-constrained systems."""
     ram = get_system_ram_gb()
     m_lower = (model_name or "").lower()
-    # On systems with 10GB+ RAM, 7B and 9B models safely run at 4096 tokens with num_predict=-1
+    # On systems with <14GB RAM, 9B models require 2048 context to prevent kernel OOM kills
     if any(k in m_lower for k in ("9b", "14b", "32b", "70b")):
-        return 4096 if ram >= 10.0 else 2048
+        return 2048 if ram < 14.0 else 4096
     if ram < 8.0:
         return 2048
     return 4096
