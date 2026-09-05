@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.6.2"
+__version__ = "1.6.3"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -1191,6 +1191,21 @@ class Agent:
 
         return f"Unknown tool: '{name}'."
 
+    @staticmethod
+    def robust_json_loads(text):
+        """Parses JSON even if it contains unescaped control characters (newlines) or trailing commas."""
+        try:
+            return json.loads(text, strict=False)
+        except Exception:
+            pass
+        cleaned = re.sub(r",\s*([\]}])", r"\1", text)
+        try:
+            return json.loads(cleaned, strict=False)
+        except Exception:
+            pass
+        return None
+
+
     def extract_tool_call(self, text, user_prompt="", step=1):
         """Extract tool call using markdown blocks, balanced-brace parsing, and raw JSON fallback.
         Also provides an agentic fallback: if the model produced a code block instead of JSON,
@@ -1198,13 +1213,10 @@ class Agent:
         # 1. Try finding markdown code block with json
         blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
         for b in blocks:
-            try:
-                data = json.loads(b)
-                if isinstance(data, dict) and "name" in data and ("arguments" in data or "parameters" in data):
-                    raw_args = data.get("arguments") if "arguments" in data else data.get("parameters")
-                    return data["name"], _clean_arguments(raw_args), True
-            except Exception:
-                pass
+            data = Agent.robust_json_loads(b)
+            if isinstance(data, dict) and "name" in data and ("arguments" in data or "parameters" in data):
+                raw_args = data.get("arguments") if "arguments" in data else data.get("parameters")
+                return data["name"], _clean_arguments(raw_args), True
 
         # 2. Balanced brace scan for {"name": ..., "arguments": ...}
         # Handles nested braces, code containing CSS/JS, and escaped quotes properly
@@ -1232,25 +1244,19 @@ class Agent:
                         brace_count -= 1
                         if brace_count == 0:
                             candidate = text[start:i+1]
-                            try:
-                                data = json.loads(candidate)
-                                if isinstance(data, dict) and "name" in data and ("arguments" in data or "parameters" in data):
-                                    raw_args = data.get("arguments") if "arguments" in data else data.get("parameters")
-                                    return data["name"], _clean_arguments(raw_args), True
-                            except Exception:
-                                pass
+                            data = Agent.robust_json_loads(candidate)
+                            if isinstance(data, dict) and "name" in data and ("arguments" in data or "parameters" in data):
+                                raw_args = data.get("arguments") if "arguments" in data else data.get("parameters")
+                                return data["name"], _clean_arguments(raw_args), True
                             break
 
         # 3. Fallback: try whole string if it starts and ends with { }
         stripped = text.strip()
         if stripped.startswith("{") and stripped.endswith("}"):
-            try:
-                data = json.loads(stripped)
-                if isinstance(data, dict) and "name" in data and ("arguments" in data or "parameters" in data):
-                    raw_args = data.get("arguments") if "arguments" in data else data.get("parameters")
-                    return data["name"], _clean_arguments(raw_args), True
-            except Exception:
-                pass
+            data = Agent.robust_json_loads(stripped)
+            if isinstance(data, dict) and "name" in data and ("arguments" in data or "parameters" in data):
+                raw_args = data.get("arguments") if "arguments" in data else data.get("parameters")
+                return data["name"], _clean_arguments(raw_args), True
 
         # 3.5 Fallback: Robust regex extraction for write_file if JSON was malformed or truncated
         if '"name"' in text or '{"name":' in text or '"write_file"' in text:
@@ -1753,7 +1759,7 @@ class Agent:
 
             if not is_tool:
                 # Nudge guard: If this is a bug fix request and the model hasn't applied edit_file/write_file yet
-                if fix_match and not any(sig[0] in ("edit_file", "write_file") for sig in recent_tool_sigs) and step <= 5:
+                if fix_match and not any(sig[0] in ("edit_file", "write_file") for sig in recent_tool_sigs) and step <= 10:
                     cand_name = fix_match.name if isinstance(fix_match, Path) else str(fix_match)
                     self.history.append({
                         "role": "user",
@@ -1766,10 +1772,12 @@ class Agent:
                     step += 1
                     continue
 
-                if not was_streamed and res.strip():
+                if res.strip():
                     clean_res = re.sub(r"```[a-zA-Z0-9_-]*\s*\n.*?```", "", res, flags=re.DOTALL).strip()
                     if clean_res and not re.search(r'^\s*(?:```|\{\s*"name")', clean_res):
                         print(f"\n{BOLD}{CYAN}Qwen:{RESET} {clean_res}")
+                    else:
+                        print(f"\n{BOLD}{CYAN}Qwen:{RESET} {res.strip()[:400]}")
                 break
 
             print(" " * 30, end="\r")
