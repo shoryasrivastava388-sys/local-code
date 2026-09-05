@@ -12,6 +12,8 @@ Features:
 """
 
 import argparse
+import ast
+import builtins
 import difflib
 import fnmatch
 import html
@@ -30,7 +32,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.8.1"
+__version__ = "1.8.2"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -561,10 +563,28 @@ def validate_code(path, content):
                 except Exception:
                     pass
 
-    # 2. Python syntax checks
+    # 2. Python syntax and AST checks
     elif p_str.endswith(".py"):
         try:
-            compile(content, path, "exec")
+            tree = ast.parse(content, filename=path)
+            defs = set(dir(builtins))
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    defs.add(node.name)
+                elif isinstance(node, ast.Import):
+                    for n in node.names:
+                        defs.add(n.asname or n.name)
+                elif isinstance(node, ast.ImportFrom):
+                    for n in node.names:
+                        defs.add(n.asname or n.name)
+                elif isinstance(node, ast.Assign):
+                    for t in node.targets:
+                        if isinstance(t, ast.Name):
+                            defs.add(t.id)
+            for node in tree.body:
+                if isinstance(node, ast.Expr) and isinstance(node.value, ast.Name):
+                    if node.value.id not in defs:
+                        issues.append(f"Python Syntax Error on line {node.lineno}: undefined variable or incomplete trailing token '{node.value.id}'")
         except SyntaxError as e:
             issues.append(f"Python SyntaxError on line {e.lineno}: {e.msg}")
         except Exception as e:
@@ -651,7 +671,15 @@ def auto_heal_code(display_path, content, p):
             cand_issues = validate_code(display_path, cand)
             if len(cand_issues) <= len(issues):
                 healed, issues = cand, cand_issues
-                print(f"   {GREEN}✓ Auto-healed placeholder script wrapper in '{display_path}'{RESET}")
+    # 5. Python incomplete trailing token or EOF syntax error heal
+    if p_suffix == ".py" and issues:
+        lines = healed.splitlines()
+        if len(lines) >= 10:
+            cand = "\n".join(lines[:-1]) + "\n"
+            cand_issues = validate_code(display_path, cand)
+            if len(cand_issues) < len(issues):
+                healed, issues = cand, cand_issues
+                print(f"   {GREEN}✓ Auto-trimmed incomplete trailing token in '{display_path}'{RESET}")
 
     if healed != content:
         p.write_text(healed, encoding="utf-8")
