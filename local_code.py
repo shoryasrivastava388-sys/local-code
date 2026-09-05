@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.6.5"
+__version__ = "1.6.6"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -662,8 +662,7 @@ class Agent:
             p = Path(os.path.expanduser(cand_match.group(1)))
             if not p.is_absolute():
                 p = (Path(os.getcwd()) / p).resolve()
-            if p.is_file():
-                return p
+            return p
 
         # 2. Check conversation history for files accessed by tools
         for msg in reversed(self.history):
@@ -677,21 +676,23 @@ class Agent:
                     if p.is_file():
                         return p
 
-        # 3. If browser/web/game/html/page is mentioned, find the newest HTML file in cwd
+        # 3. If browser/web/game/html/page is mentioned and intent is NOT creation, find the newest HTML file in cwd
         p_lower = user_prompt.lower()
-        if any(w in p_lower for w in ("browser", "html", "game", "page", "ui", "site", "web", "snake", "arcade")):
+        is_create_intent = bool(re.search(r"\b(?:create|build|generate|write|implement|new|code|develop)\b", user_prompt, re.IGNORECASE))
+        if not is_create_intent and any(w in p_lower for w in ("browser", "html", "game", "page", "ui", "site", "web", "snake", "arcade")):
             html_files = sorted(Path(os.getcwd()).glob("*.html"), key=lambda f: f.stat().st_mtime, reverse=True)
             if html_files:
                 return html_files[0]
 
-        # 4. Check for newest code file in cwd
-        code_files = sorted(
-            [f for f in Path(os.getcwd()).iterdir() if f.is_file() and f.suffix.lower() in ('.py', '.js', '.html', '.sh')],
-            key=lambda f: f.stat().st_mtime,
-            reverse=True
-        )
-        if code_files:
-            return code_files[0]
+        # 4. Check for newest code file in cwd (if not creation intent)
+        if not is_create_intent:
+            code_files = sorted(
+                [f for f in Path(os.getcwd()).iterdir() if f.is_file() and f.suffix.lower() in ('.py', '.js', '.html', '.sh')],
+                key=lambda f: f.stat().st_mtime,
+                reverse=True
+            )
+            if code_files:
+                return code_files[0]
 
         return None
 
@@ -1757,8 +1758,9 @@ class Agent:
                     for iss in issues:
                         print(f"   {RED}• {iss}{RESET}")
                 else:
+                    is_create_intent = bool(re.search(r"\b(?:create|build|generate|write|implement|new|code|develop)\b", user_prompt, re.IGNORECASE))
                     is_edit_or_fix = bool(re.search(r"\b(?:fix|repair|debug|solve|unbug|bug|broken|issue|inspect|search|edit|modify|update|upgrade|refactor|change|make|improve|pull\s+out|give\s+me)\b", user_prompt, re.IGNORECASE))
-                    is_launch_only = any(w in user_prompt.lower() for w in ("open", "browser", "launch", "play", "view", "test")) and not is_edit_or_fix
+                    is_launch_only = bool(re.search(r"^\s*(?:open|launch|view|play|test)\b|\b(?:open|launch)\s+in\s+browser\b", user_prompt, re.IGNORECASE)) and not (is_edit_or_fix or is_create_intent)
 
                     if cand.suffix.lower() in (".html", ".htm") and (is_launch_only or (has_fix_word and not issues)):
                         print(f"\n{GREEN}✓ Pre-flight diagnostic check: '{cand.name}' has 0 errors.{RESET}")
