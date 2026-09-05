@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.6.7"
+__version__ = "1.6.8"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -970,7 +970,7 @@ class Agent:
                         return f"Error: Target snippet occurs {old_text_norm.count(target_norm)} times in '{display_path}'. Include more surrounding context lines to make it unique."
                     new_text = old_text_norm.replace(target_norm, replacement_norm, 1)
                 else:
-                    # Line-by-line whitespace-insensitive fuzzy matching for minor indentation differences
+                    # 1. Line-by-line whitespace-insensitive fuzzy matching for minor indentation differences
                     target_lines = [l.strip() for l in target_norm.strip().splitlines() if l.strip()]
                     file_lines = old_text_norm.splitlines()
                     match_start = -1
@@ -983,9 +983,37 @@ class Agent:
                         before = file_lines[:match_start]
                         after = file_lines[match_start + len(target_lines):]
                         new_text = "\n".join(before + [replacement_norm] + after)
-                    else:
+
+                    # 2. Ellipsis spanning: if target uses '...' or '/* ... */' to denote a range
+                    if not new_text and re.search(r"^\s*(?:\.\.\.|/\*\s*\.\.\.\s*\*/|//\s*\.\.\.)\s*$", target_norm, flags=re.M):
+                        parts = re.split(r"^\s*(?:\.\.\.|/\*\s*\.\.\.\s*\*/|//\s*\.\.\.)\s*$", target_norm, flags=re.M)
+                        if len(parts) == 2:
+                            head_lines = [l.strip() for l in parts[0].strip().splitlines() if l.strip()]
+                            tail_lines = [l.strip() for l in parts[1].strip().splitlines() if l.strip()]
+                            head_idx = -1
+                            tail_idx = -1
+                            if head_lines:
+                                for i in range(len(file_lines) - len(head_lines) + 1):
+                                    if [file_lines[i + j].strip() for j in range(len(head_lines))] == head_lines:
+                                        head_idx = i
+                                        break
+                            if tail_lines and head_idx != -1:
+                                for k in range(head_idx + len(head_lines), len(file_lines) - len(tail_lines) + 1):
+                                    if [file_lines[k + j].strip() for j in range(len(tail_lines))] == tail_lines:
+                                        tail_idx = k + len(tail_lines)
+                                        break
+                            if head_idx != -1 and tail_idx != -1:
+                                before = file_lines[:head_idx]
+                                after = file_lines[tail_idx:]
+                                new_text = "\n".join(before + [replacement_norm] + after)
+
+                    if not new_text:
                         print(f"   {RED}✗ Target snippet not found in '{display_path}'{RESET}")
                         print(f"   {GRAY}Attempted target snippet: {repr(target_norm[:120])}{RESET}")
+                        if len(target_lines) > 1 and all(any(tl == fl.strip() for fl in file_lines) for tl in target_lines):
+                            found_lines = [next(idx + 1 for idx, fl in enumerate(file_lines) if fl.strip() == tl) for tl in target_lines]
+                            print(f"   {YELLOW}💡 Hint: Lines found at non-consecutive lines {found_lines}. Edit each snippet separately or include surrounding lines.{RESET}")
+                            return f"Error: Target lines were found at non-consecutive lines {found_lines} in '{display_path}'. Please edit each section separately using 'edit_file', or include the full contiguous block between them."
                         if any(k in target_norm for k in ("<exact", "<clean", "<placeholder")):
                             print(f"   {YELLOW}💡 Hint: Use real code lines from '{display_path}', not placeholder text.{RESET}")
                         return f"Error: Target snippet not found in '{display_path}'. Please provide the exact code lines as they appear in '{display_path}'."
