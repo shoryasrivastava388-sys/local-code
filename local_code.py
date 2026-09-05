@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.5.8"
+__version__ = "1.5.9"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -440,10 +440,15 @@ def validate_code(path, content):
             issues.append("Malformed HTML: <head> tag is opened but never closed with </head>.")
         if "<body" not in content_lower:
             issues.append("Malformed HTML: Document is missing <body> opening tag.")
-        open_scripts = len(re.findall(r"<script(?:\s+[^>]*)?>", content, flags=re.IGNORECASE))
-        close_scripts = len(re.findall(r"</script>", content, flags=re.IGNORECASE))
-        if open_scripts != close_scripts:
-            issues.append(f"Malformed HTML: Mismatched script tags ({open_scripts} '<script>' vs {close_scripts} '</script>'). Ensure all JavaScript code is properly wrapped inside matching <script>...</script> tags.")
+        open_scripts = [m.start() for m in re.finditer(r"<script(?:\s+[^>]*)?>", content, flags=re.IGNORECASE)]
+        close_scripts = [m.start() for m in re.finditer(r"</script>", content, flags=re.IGNORECASE)]
+        if len(open_scripts) != len(close_scripts):
+            open_lines = [content[:pos].count("\n") + 1 for pos in open_scripts]
+            close_lines = [content[:pos].count("\n") + 1 for pos in close_scripts]
+            issues.append(
+                f"Malformed HTML: Mismatched script tags ({len(open_scripts)} '<script>' at line(s) {open_lines} vs {len(close_scripts)} '</script>' at line(s) {close_lines}). "
+                "Ensure all JavaScript code is properly wrapped inside matching <script>...</script> tags."
+            )
 
         # Trailing garbage/commentary check after </html>
         if "</html>" in content_lower:
@@ -934,9 +939,10 @@ class Agent:
                         new_text = "\n".join(before + [replacement_norm] + after)
                     else:
                         print(f"   {RED}✗ Target snippet not found in '{display_path}'{RESET}")
+                        print(f"   {GRAY}Attempted target snippet: {repr(target_norm[:120])}{RESET}")
                         if any(k in target_norm for k in ("<exact", "<clean", "<placeholder")):
                             print(f"   {YELLOW}💡 Hint: Use real code lines from '{display_path}', not placeholder text.{RESET}")
-                        return f"Error: Target snippet not found in '{display_path}'. Please read the file with read_file first to see the exact lines."
+                        return f"Error: Target snippet not found in '{display_path}'. Please provide the exact code lines as they appear in '{display_path}'."
 
                 # Show colored diff before applying
                 print_diff(old_text_norm, new_text, display_path)
@@ -1630,6 +1636,14 @@ class Agent:
                         cand.write_text(f_content, encoding="utf-8")
                         print(f"\n{GREEN}✓ Auto-sanitized {len(trailing_text)} characters of trailing commentary after </html>{RESET}")
 
+                # Auto-heal dummy placeholder script tags causing mismatched script tags
+                if cand.suffix.lower() in (".html", ".htm") and "/* your code here */" in f_content.lower():
+                    dummy_pat = r"<body>\s*<body>\s*<script>document\.addEventListener\(['\"]DOMContentLoaded['\"],\s*function\(\)\s*\{\s*/\*\s*Your code here\s*\*/\s*\}\);\s*</script>\s*</body>\s*</body>"
+                    if re.search(dummy_pat, f_content, re.IGNORECASE):
+                        f_content = re.sub(dummy_pat, "<body>\n<script>", f_content, flags=re.IGNORECASE)
+                        cand.write_text(f_content, encoding="utf-8")
+                        print(f"\n{GREEN}✓ Auto-healed placeholder script wrapper in '{cand.name}'{RESET}")
+
                 issues = validate_code(str(cand), f_content)
                 if issues:
                     fix_match = cand
@@ -1645,7 +1659,7 @@ class Agent:
                     is_edit_or_fix = bool(re.search(r"\b(?:fix|repair|debug|solve|unbug|bug|broken|issue|inspect|search|edit|modify|update|upgrade|refactor|change|make|improve|pull\s+out|give\s+me)\b", user_prompt, re.IGNORECASE))
                     is_launch_only = any(w in user_prompt.lower() for w in ("open", "browser", "launch", "play", "view", "test")) and not is_edit_or_fix
 
-                    if cand.suffix.lower() in (".html", ".htm") and is_launch_only:
+                    if cand.suffix.lower() in (".html", ".htm") and (is_launch_only or (has_fix_word and not issues)):
                         print(f"\n{GREEN}✓ Pre-flight diagnostic check: '{cand.name}' has 0 errors.{RESET}")
                         self.execute_tool("open_browser", {"url": cand.name}, user_prompt=user_prompt)
                         self.history.append({"role": "user", "content": user_prompt})
@@ -1708,7 +1722,7 @@ class Agent:
                 result = f"Loop prevented: Web research is already complete. Proceed IMMEDIATELY to invoke 'write_file' to create '{target_file}' with your code implementation. Do NOT search or browse the web again."
                 print(f"   {YELLOW}⚡ Research complete. Transitioning directly to code creation...{RESET}")
                 recent_tool_sigs.append(sig)
-            elif recent_tool_sigs.count(sig) >= 1 and name == "read_file":
+            elif len(recent_tool_sigs) >= 1 and recent_tool_sigs[-1] == sig and name == "read_file":
                 target_file = args.get("path", "")
                 full_p = Path(os.path.expanduser(target_file))
                 if not full_p.is_absolute():
@@ -1721,21 +1735,17 @@ class Agent:
                         pass
                 if issues:
                     result = (
-                        f"Loop prevented: You have already read '{target_file}'. "
+                        f"Notice: You have already read '{target_file}'. "
                         f"Automated static diagnostics detected {len(issues)} critical error(s) in this file:\n"
                         + "\n".join(f"- {iss}" for iss in issues)
-                        + f"\nYou MUST invoke 'edit_file' NOW to surgically fix these errors. Do NOT call 'read_file' again."
+                        + f"\nYou MUST invoke 'edit_file' NOW with real lines from '{target_file}' in 'target' and your fix in 'replacement'."
                     )
-                    if recent_tool_sigs.count(sig) >= 2:
-                        result += (
-                            f"\nCRITICAL: STOP calling read_file. You MUST invoke 'edit_file' now with the real code lines to replace from '{target_file}'."
-                        )
-                    print(f"   {YELLOW}⚡ File already read. Forcing transition to edit_file ({len(issues)} issue(s) detected)...{RESET}")
+                    print(f"   {YELLOW}⚡ Consecutive read skipped. Directing to edit_file ({len(issues)} issue(s) detected)...{RESET}")
                 elif (target_file.endswith((".html", ".htm")) or "html" in p_lower) and any(w in p_lower for w in ("open", "browser", "launch", "play", "view", "test")):
-                    result = f"Loop prevented: '{target_file}' is already read and verified with 0 errors. Proceed IMMEDIATELY to invoke 'open_browser' with args: {{\"url\": \"{target_file}\"}} to test it in the browser."
+                    result = f"Notice: '{target_file}' is already read and verified with 0 errors. Proceed to invoke 'open_browser' with args: {{\"url\": \"{target_file}\"}} to test it in the browser."
                     print(f"   {YELLOW}⚡ File verified (0 errors). Transitioning directly to browser test...{RESET}")
                 else:
-                    result = f"Loop prevented: '{target_file}' is already read. Proceed to invoke 'edit_file' to modify the file or proceed to your next action."
+                    result = f"Notice: '{target_file}' is already read. Proceed to invoke 'edit_file' to modify the file or proceed to your next action."
                 recent_tool_sigs.append(sig)
             else:
                 recent_tool_sigs.append(sig)
@@ -1761,8 +1771,7 @@ class Agent:
                     feedback += (
                         f"File '{target_f}' has been read. Automated static diagnostics detected issues:\n"
                         + "\n".join(f"- {iss}" for iss in file_issues)
-                        + f"\nYou MUST invoke 'edit_file' now with the exact target code snippet to fix these issues on disk. "
-                        f"Format:\n```json\n{{\"name\": \"edit_file\", \"arguments\": {{\"path\": \"{target_f}\", \"target\": \"<exact code to replace>\", \"replacement\": \"<clean fixed code>\"}}}}\n```\n"
+                        + f"\nYou MUST invoke 'edit_file' now with the actual lines from '{target_f}' to replace. "
                         f"Do NOT stop or summarize without editing."
                     )
                 elif any(w in p_lower for w in ("open", "browser", "launch", "play", "view", "test")) and (target_f.endswith((".html", ".htm")) or "html" in p_lower):
