@@ -130,9 +130,9 @@ Tools:
 ## Core Directives
 1. ZERO CODE IN CHAT: NEVER output markdown code blocks or code in chat. ALWAYS invoke `write_file` or `edit_file` to write code directly to disk.
 2. CREATING & FIXING FILES:
-   - When creating new files or fixing structural/DOM bugs, invoke `write_file` with the full, working implementation.
-   - When making small targeted edits, invoke `edit_file`.
-   - Read a file at most ONCE with `read_file`. After reading, IMMEDIATELY invoke `write_file` or `edit_file` to apply the fix. NEVER call `read_file` repeatedly without modifying code!
+   - For NEW files: invoke `write_file` with the full, complete working implementation.
+   - For MODIFYING or FIXING EXISTING files: invoke `read_file` once to find the code to change, then ALWAYS invoke `edit_file` to surgically update only the relevant lines or functions. DO NOT rewrite the entire file with `write_file` when fixing bugs — surgical edits with `edit_file` are 50x faster and prevent truncation.
+   - Read a file at most ONCE with `read_file`. After reading, IMMEDIATELY invoke `edit_file` to apply the fix. NEVER call `read_file` repeatedly without modifying code!
 3. COMPLETE CODE ONLY — NO PLACEHOLDERS:
    - NEVER output `// TODO`, `// Your code here`, or empty stubs. Write complete math, physics, event listeners, and styles.
    - Self-contained vanilla implementations: Write self-contained vanilla HTML5/Canvas 2D/Web Audio API with 0 external CDN dependencies so everything works 100% offline.
@@ -633,6 +633,7 @@ def validate_code(path, content):
 
 def auto_heal_code(display_path, content, p):
     """Applies safe, automated healing for common minor syntax and runtime glitches produced by LLMs.
+    Runs iteratively up to 4 passes until syntax and runtime issues converge to 0.
     Returns (healed_content, final_issues)."""
     issues = validate_code(display_path, content)
     if not issues:
@@ -641,91 +642,125 @@ def auto_heal_code(display_path, content, p):
     healed = content
     p_suffix = p.suffix.lower()
 
-    # 1. Duplicate parameters in arrow functions, e.g. (t, t) => ... -> (_, t) => ...
-    if any("Duplicate parameter" in iss for iss in issues):
-        cand = re.sub(r'\(([a-zA-Z_$][a-zA-Z0-9_$]*),\s*\1\)\s*=>', r'(_,\1) =>', healed)
-        cand_issues = validate_code(display_path, cand)
-        if len(cand_issues) <= len(issues):
-            healed, issues = cand, cand_issues
-            print(f"   {GREEN}✓ Auto-resolved duplicate parameter in arrow function{RESET}")
+    for pass_num in range(4):
+        if not issues:
+            break
+        prev_issues_len = len(issues)
 
-    # 2. Unquoted identifier in getElementById, e.g. getElementById(e) -> getElementById("e")
-    if any("is not defined" in iss or "Cannot access" in iss for iss in issues):
-        cand = re.sub(r'getElementById\(([a-zA-Z_][a-zA-Z0-9_]*)\)', r'getElementById("\1")', healed)
-        cand_issues = validate_code(display_path, cand)
-        if len(cand_issues) <= len(issues):
-            healed, issues = cand, cand_issues
-            print(f"   {GREEN}✓ Auto-quoted unquoted identifier in getElementById{RESET}")
+        # 1. Duplicate parameters in arrow functions, e.g. (t, t) => ... -> (_, t) => ...
+        if any("Duplicate parameter" in iss for iss in issues):
+            cand = re.sub(r'\(([a-zA-Z_$][a-zA-Z0-9_$]*),\s*\1\)\s*=>', r'(_,\1) =>', healed)
+            cand_issues = validate_code(display_path, cand)
+            if len(cand_issues) <= len(issues):
+                healed, issues = cand, cand_issues
+                print(f"   {GREEN}✓ Auto-resolved duplicate parameter in arrow function{RESET}")
 
-    # 3. Brace balancing for missing or extra closing braces
-    if any("Unexpected end of input" in iss for iss in issues):
-        open_b = healed.count('{')
-        close_b = healed.count('}')
-        if open_b > close_b:
-            diff = open_b - close_b
-            if p_suffix in (".html", ".htm") and "</script>" in healed:
-                idx = healed.rfind("</script>")
-                cand = healed[:idx] + ("\n}" * diff) + "\n" + healed[idx:]
+        # 2. Unquoted identifier in getElementById, e.g. getElementById(e) -> getElementById("e")
+        if any("is not defined" in iss or "Cannot access" in iss for iss in issues):
+            cand = re.sub(r'getElementById\(([a-zA-Z_][a-zA-Z0-9_]*)\)', r'getElementById("\1")', healed)
+            cand_issues = validate_code(display_path, cand)
+            if len(cand_issues) <= len(issues):
+                healed, issues = cand, cand_issues
+                print(f"   {GREEN}✓ Auto-quoted unquoted identifier in getElementById{RESET}")
+
+        # 3. Brace balancing for missing or extra closing braces in scripts and files
+        if any("Unexpected end of input" in iss or "SyntaxError" in iss for iss in issues):
+            if p_suffix in (".html", ".htm") and "<script" in healed and "</script>" in healed:
+                s_idx = healed.find("<script")
+                s_idx = healed.find(">", s_idx) + 1
+                e_idx = healed.rfind("</script>")
+                s_code = healed[s_idx:e_idx]
+                diff = s_code.count('{') - s_code.count('}')
+                if diff > 0:
+                    cand = healed[:e_idx] + ("\n}" * diff) + "\n" + healed[e_idx:]
+                    cand_issues = validate_code(display_path, cand)
+                    if len(cand_issues) <= len(issues):
+                        healed, issues = cand, cand_issues
+                        print(f"   {GREEN}✓ Auto-balanced {diff} unclosed brace(s) in <script> in '{display_path}'{RESET}")
+                elif diff < 0:
+                    cand = re.sub(r'\}\s*</script>', '</script>', healed)
+                    cand_issues = validate_code(display_path, cand)
+                    if len(cand_issues) <= len(issues):
+                        healed, issues = cand, cand_issues
+                        print(f"   {GREEN}✓ Auto-balanced {abs(diff)} extra closing brace(s) in <script> in '{display_path}'{RESET}")
             else:
-                cand = healed + ("\n}" * diff) + "\n"
-            cand_issues = validate_code(display_path, cand)
-            if len(cand_issues) <= len(issues):
-                healed, issues = cand, cand_issues
-                print(f"   {GREEN}✓ Auto-balanced {diff} unclosed brace(s) in '{display_path}'{RESET}")
-        elif close_b > open_b and p_suffix in (".html", ".htm") and "</script>" in healed:
-            diff = close_b - open_b
-            cand = re.sub(r'\}\s*</script>', '</script>', healed)
-            cand_issues = validate_code(display_path, cand)
-            if len(cand_issues) <= len(issues):
-                healed, issues = cand, cand_issues
-                print(f"   {GREEN}✓ Auto-balanced {diff} extra closing brace(s) in '{display_path}'{RESET}")
+                open_b = healed.count('{')
+                close_b = healed.count('}')
+                if open_b > close_b:
+                    diff = open_b - close_b
+                    cand = healed + ("\n}" * diff) + "\n"
+                    cand_issues = validate_code(display_path, cand)
+                    if len(cand_issues) <= len(issues):
+                        healed, issues = cand, cand_issues
+                        print(f"   {GREEN}✓ Auto-balanced {diff} unclosed brace(s) in '{display_path}'{RESET}")
+                elif close_b > open_b:
+                    diff = close_b - open_b
+                    cand = healed.rstrip().rstrip('}') + "\n"
+                    cand_issues = validate_code(display_path, cand)
+                    if len(cand_issues) <= len(issues):
+                        healed, issues = cand, cand_issues
+                        print(f"   {GREEN}✓ Auto-balanced {diff} extra closing brace(s) in '{display_path}'{RESET}")
 
-    # 4. Auto-heal dummy placeholder script tags
-    if p_suffix in (".html", ".htm") and "/* your code here */" in healed.lower():
-        dummy_pat = r"<body>\s*<body>\s*<script>document\.addEventListener\(['\"]DOMContentLoaded['\"],\s*function\(\)\s*\{\s*/\*\s*Your code here\s*\*/\s*\}\);\s*</script>\s*</body>\s*</body>"
-        if re.search(dummy_pat, healed, re.IGNORECASE):
-            cand = re.sub(dummy_pat, "<body>\n<script>", healed, flags=re.IGNORECASE)
-            cand_issues = validate_code(display_path, cand)
-            if len(cand_issues) <= len(issues):
-                healed, issues = cand, cand_issues
-    # 5. Python incomplete trailing token or EOF syntax error heal
-    if p_suffix == ".py" and issues:
-        lines = healed.splitlines()
-        if len(lines) >= 10:
-            cand = "\n".join(lines[:-1]) + "\n"
-            cand_issues = validate_code(display_path, cand)
-            if len(cand_issues) < len(issues):
-                healed, issues = cand, cand_issues
-    # 6. Auto-heal contenteditable element .value property accesses
-    if p_suffix in (".html", ".htm", ".js") and "contenteditable" in healed.lower() and ".value" in healed:
-        cand = re.sub(r'(\bthis|\b[a-zA-Z_$][a-zA-Z0-9_$]*)\.value(\b(?:\.trim|\.length|\.split|\s*[,;\+\-\)]))', r'(\1.value !== undefined ? \1.value : (\1.innerText || ""))\2', healed)
-        if cand != healed:
-            cand_issues = validate_code(display_path, cand)
-            if len(cand_issues) <= len(issues):
-                healed, issues = cand, cand_issues
-                print(f"   {GREEN}✓ Auto-healed .value property on contenteditable element in '{display_path}'{RESET}")
+        # 4. Auto-heal dummy placeholder script tags
+        if p_suffix in (".html", ".htm") and "/* your code here */" in healed.lower():
+            dummy_pat = r"<body>\s*<body>\s*<script>document\.addEventListener\(['\"]DOMContentLoaded['\"],\s*function\(\)\s*\{\s*/\*\s*Your code here\s*\*/\s*\}\);\s*</script>\s*</body>\s*</body>"
+            if re.search(dummy_pat, healed, re.IGNORECASE):
+                cand = re.sub(dummy_pat, "<body>\n<script>", healed, flags=re.IGNORECASE)
+                cand_issues = validate_code(display_path, cand)
+                if len(cand_issues) <= len(issues):
+                    healed, issues = cand, cand_issues
 
-    # 7. Auto-heal inverted condition logic in node/state pickers
-    if p_suffix in (".html", ".htm", ".js"):
-        cand = re.sub(
-            r'else\s+if\s*\(\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*&&([^)]*)\)\s*\{\s*\1\s*=',
-            r'else if (!\1 &&\2) {\n    \1 =',
-            healed
-        )
-        if cand != healed:
-            cand_issues = validate_code(display_path, cand)
-            if len(cand_issues) <= len(issues):
-                healed, issues = cand, cand_issues
-                print(f"   {GREEN}✓ Auto-healed inverted condition guard in '{display_path}'{RESET}")
+        # 5. Python incomplete trailing token or EOF syntax error heal
+        if p_suffix == ".py" and issues:
+            lines = healed.splitlines()
+            if len(lines) >= 10:
+                cand = "\n".join(lines[:-1]) + "\n"
+                cand_issues = validate_code(display_path, cand)
+                if len(cand_issues) < len(issues):
+                    healed, issues = cand, cand_issues
 
-    # 8. Auto-heal single-line compound Python statements
-    if p_suffix == ".py" and any("SyntaxError" in iss for iss in issues):
-        cand = re.sub(r':\s*(try|while|for|if|with)\b', r':\n    \1', healed)
-        if cand != healed:
-            cand_issues = validate_code(display_path, cand)
-            if len(cand_issues) < len(issues):
-                healed, issues = cand, cand_issues
-                print(f"   {GREEN}✓ Auto-unpacked compound Python statements in '{display_path}'{RESET}")
+        # 6. Auto-heal contenteditable element .value property accesses
+        if p_suffix in (".html", ".htm", ".js") and "contenteditable" in healed.lower() and ".value" in healed:
+            cand = re.sub(r'(\bthis|\b[a-zA-Z_$][a-zA-Z0-9_$]*)\.value(\b(?:\.trim|\.length|\.split|\s*[,;\+\-\)]))', r'(\1.value !== undefined ? \1.value : (\1.innerText || ""))\2', healed)
+            if cand != healed:
+                cand_issues = validate_code(display_path, cand)
+                if len(cand_issues) <= len(issues):
+                    healed, issues = cand, cand_issues
+                    print(f"   {GREEN}✓ Auto-healed .value property on contenteditable element in '{display_path}'{RESET}")
+
+        # 7. Auto-heal inverted condition logic in node/state pickers
+        if p_suffix in (".html", ".htm", ".js"):
+            cand = re.sub(
+                r'else\s+if\s*\(\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*&&([^)]*)\)\s*\{\s*\1\s*=',
+                r'else if (!\1 &&\2) {\n    \1 =',
+                healed
+            )
+            if cand != healed:
+                cand_issues = validate_code(display_path, cand)
+                if len(cand_issues) <= len(issues):
+                    healed, issues = cand, cand_issues
+                    print(f"   {GREEN}✓ Auto-healed inverted condition guard in '{display_path}'{RESET}")
+
+        # 8. Auto-heal single-line compound Python statements
+        if p_suffix == ".py" and any("SyntaxError" in iss for iss in issues):
+            cand = re.sub(r':\s*(try|while|for|if|with)\b', r':\n    \1', healed)
+            if cand != healed:
+                cand_issues = validate_code(display_path, cand)
+                if len(cand_issues) < len(issues):
+                    healed, issues = cand, cand_issues
+                    print(f"   {GREEN}✓ Auto-unpacked compound Python statements in '{display_path}'{RESET}")
+
+        # 9. Auto-heal arrow functions accidentally wrapped in object literal brackets e.g. = { (x) => ... } -> = (x) => ...
+        if p_suffix in (".html", ".htm", ".js") and any("Unexpected token" in iss or "SyntaxError" in iss for iss in issues):
+            cand = re.sub(r'([a-zA-Z0-9_$]+\s*=\s*)\{\s*(\([^)]*\)\s*=>[\s\S]*?)\}', r'\1\2', healed)
+            if cand != healed:
+                cand_issues = validate_code(display_path, cand)
+                if len(cand_issues) <= len(issues):
+                    healed, issues = cand, cand_issues
+                    print(f"   {GREEN}✓ Auto-unwrapped arrow function in '{display_path}'{RESET}")
+
+        if len(issues) == prev_issues_len and cand == healed:
+            break
 
     if healed != content:
         p.write_text(healed, encoding="utf-8")
