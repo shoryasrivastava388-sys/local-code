@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.6.9"
+__version__ = "1.7.0"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -636,7 +636,7 @@ def _clean_arguments(args):
 
 
 class Agent:
-    def __init__(self, model="qwen2.5-coder:7b", host="http://127.0.0.1:11434", context=None, temp=0.2, auto=False):
+    def __init__(self, model="qwen3.5:9b", host="http://127.0.0.1:11434", context=None, temp=0.2, auto=False):
         self.model = model
         self.host = host.rstrip("/")
         if context is None:
@@ -1983,12 +1983,6 @@ def list_installed_models(host):
 
 
 def main():
-    default_model = (
-        os.environ.get("LOCAL_CODE_MODEL")
-        or os.environ.get("LC_MODEL")
-        or os.environ.get("QWEN_MODEL")
-        or "qwen2.5-coder:7b"
-    )
     default_host = (
         os.environ.get("LOCAL_CODE_HOST")
         or os.environ.get("LC_HOST")
@@ -1996,6 +1990,21 @@ def main():
         or os.environ.get("OLLAMA_HOST")
         or "http://127.0.0.1:11434"
     )
+    installed = list_installed_models(default_host)
+    default_model = (
+        os.environ.get("LOCAL_CODE_MODEL")
+        or os.environ.get("LC_MODEL")
+        or os.environ.get("QWEN_MODEL")
+    )
+    if not default_model:
+        if any("qwen3.5" in m for m in installed):
+            default_model = next(m for m in installed if "qwen3.5" in m)
+        elif any("qwen2.5-coder" in m for m in installed):
+            default_model = next(m for m in installed if "qwen2.5-coder" in m)
+        elif installed:
+            default_model = installed[0]
+        else:
+            default_model = "qwen3.5:9b"
 
     parser = argparse.ArgumentParser(description="local-code (lc): Universal Cross-Platform Autonomous Local AI Engineer powered by Ollama.")
     parser.add_argument("prompt", nargs="*", help="Direct prompt to execute (non-interactive mode)")
