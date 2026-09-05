@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.7.2"
+__version__ = "1.7.3"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -1441,22 +1441,38 @@ class Agent:
 
     def stream_turn(self, step=1, user_prompt="", messages=None, spinner_label=None):
         msgs = messages if messages is not None else self.history
-        # Sliding-window context compression: Preserve system prompt, user prompt, and recent 3 turns in full.
-        # Truncate large intermediate outputs so prompt eval stays lightweight (<1200 tokens) with plenty of room for generation.
-        if len(msgs) > 4:
+        # Sliding-window context compression: Preserve system prompt, user prompt, and recent turns compactly.
+        # Ensure prompt stays lightweight (<1000 tokens) so CPU eval is <12s and max context is reserved for generation.
+        if len(msgs) > 2:
             compressed = []
             for idx, m in enumerate(msgs):
-                if idx <= 1 or idx >= len(msgs) - 3:
+                if idx <= 1:
                     compressed.append(m)
-                else:
+                elif idx == len(msgs) - 1:
                     c = m.get("content", "")
-                    if len(c) > 350:
-                        compressed.append({
-                            "role": m.get("role", "user"),
-                            "content": c[:300] + "\n...[older output truncated to save context]..."
-                        })
+                    if len(c) > 3000:
+                        compressed.append({"role": m.get("role", "user"), "content": c[:2800] + "\n...[truncated]..."})
                     else:
                         compressed.append(m)
+                else:
+                    role = m.get("role", "user")
+                    c = m.get("content", "")
+                    if role == "assistant":
+                        # Condense huge write_file / edit_file code blocks in older turns
+                        condensed = re.sub(r'("content"\s*:\s*)"(?:[^"\\]|\\.)*"', r'\1"...[code previously written to disk]..."', c)
+                        condensed = re.sub(r'("replacement"\s*:\s*)"(?:[^"\\]|\\.)*"', r'\1"...[replacement applied]..."', condensed)
+                        if len(condensed) > 350:
+                            condensed = condensed[:300] + "...[tool call truncated]..."
+                        compressed.append({"role": role, "content": condensed})
+                    else:
+                        # Condense intermediate tool output (older file reads or command runs)
+                        if len(c) > 350:
+                            compressed.append({
+                                "role": role,
+                                "content": c[:250] + "\n...[older output truncated to save context]..."
+                            })
+                        else:
+                            compressed.append(m)
             msgs = compressed
         num_threads = min(os.cpu_count() or 4, 4)
         payload = {
@@ -1771,7 +1787,7 @@ class Agent:
                     diag_msg = "\n".join(f"- {iss}" for iss in issues)
                     user_prompt += (
                         f"\n\n[Automated Static Diagnostics on {cand.name}]:\n{diag_msg}\n"
-                        f"Instructions: Use read_file to inspect {cand.name}, then use edit_file to surgically resolve all diagnostic issues. Once fixed, open it in the browser if it is an HTML file."
+                        f"Instructions: Use read_file to inspect {cand.name}, or use write_file / edit_file directly to resolve all diagnostic issues and make {cand.name} fully functional. Once fixed, open it in the browser if it is an HTML file."
                     )
                     print(f"\n{YELLOW}🔍 Diagnostics found {len(issues)} issue(s) in {cand.name}:{RESET}")
                     for iss in issues:
@@ -1813,6 +1829,44 @@ class Agent:
             name, args, is_tool = self.extract_tool_call(res, user_prompt=user_prompt, step=step)
 
             if not is_tool:
+                # Incomplete / cut-off tool call detection
+                is_truncated_tool = (
+                    res.strip().startswith("```json")
+                    or res.strip().startswith("{")
+                    or '{"name"' in res
+                    or '{"name":' in res
+                )
+                if is_truncated_tool and step < max_steps:
+                    self.history.append({
+                        "role": "user",
+                        "content": (
+                            "Your previous tool call was cut off before closing. "
+                            "Please output ONLY the complete JSON tool call (e.g. write_file or edit_file) to apply the code cleanly."
+                        )
+                    })
+                    step += 1
+                    continue
+
+                # Persistent diagnostic guard: verify whether target file still has unresolved errors
+                target_cand = fix_match or cand or self.find_active_target_file(user_prompt)
+                if target_cand and target_cand.is_file() and step < max_steps:
+                    try:
+                        current_issues = validate_code(str(target_cand), target_cand.read_text(encoding="utf-8", errors="replace"))
+                        if current_issues:
+                            diag_str = "\n".join(f"• {iss}" for iss in current_issues)
+                            self.history.append({
+                                "role": "user",
+                                "content": (
+                                    f"File '{target_cand.name}' still contains {len(current_issues)} unresolved diagnostic error(s):\n"
+                                    f"{diag_str}\n"
+                                    f"You MUST use 'write_file' or 'edit_file' to completely fix these issues. Do not finish until all errors are resolved."
+                                )
+                            })
+                            step += 1
+                            continue
+                    except Exception:
+                        pass
+
                 # Nudge guard: If this is a bug fix request and the model hasn't applied edit_file/write_file yet
                 if fix_match and not any(sig[0] in ("edit_file", "write_file") for sig in recent_tool_sigs) and step <= 10:
                     cand_name = fix_match.name if isinstance(fix_match, Path) else str(fix_match)
@@ -1820,8 +1874,8 @@ class Agent:
                         "role": "user",
                         "content": (
                             f"You inspected {cand_name}, but you have not applied the fix to disk yet. "
-                            f"You MUST invoke 'edit_file' now with the exact target snippet from {cand_name} "
-                            f"to surgically resolve the issue. Do NOT provide explanations without modifying the file."
+                            f"You MUST invoke 'write_file' or 'edit_file' now with the code for {cand_name} "
+                            f"to resolve the issue. Do NOT provide explanations without modifying the file."
                         )
                     })
                     step += 1
