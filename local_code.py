@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -58,9 +58,12 @@ def get_system_ram_gb():
 def get_safe_default_context(model_name=""):
     """Calculate safe context tokens to prevent kernel OOM kills on memory-constrained systems."""
     ram = get_system_ram_gb()
-    # On systems with <14GB total RAM, 4096 context with large models (7B-9B) can exceed physical memory.
-    # 2048 tokens is lightweight (~4.5GB peak) and ensures 100% stability.
-    if ram < 14.0:
+    m_lower = (model_name or "").lower()
+    # On systems with <14GB RAM, only heavy models (9B, 14B, 32B) need 2048 to prevent OOM
+    if any(k in m_lower for k in ("9b", "14b", "32b", "70b")):
+        return 2048 if ram < 14.0 else 4096
+    # 7B and lighter models (e.g. qwen2.5-coder:7b) comfortably run at 4096 tokens on 10GB+ RAM
+    if ram < 8.0:
         return 2048
     return 4096
 
@@ -1279,6 +1282,23 @@ class Agent:
 
                     if c_str.strip():
                         return "write_file", {"path": p_str, "content": c_str.strip()}, True
+            elif tool_name in ("edit_file", "patch_file"):
+                path_m = re.search(r'"path"\s*:\s*"([^"]+)"', text)
+                target_m = re.search(r'"target"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', text)
+                rep_m = re.search(r'"replacement"\s*:\s*"(.*)', text, flags=re.DOTALL)
+                if path_m and target_m and rep_m:
+                    p_str = path_m.group(1).strip()
+                    t_str = target_m.group(1).strip()
+                    r_str = rep_m.group(1).strip()
+                    r_str = re.sub(r'(?:"\s*\}|\s*\}\s*\}|\s*```)\s*$', '', r_str)
+                    r_str = re.sub(r'"\s*\}\s*\}\s*$', '', r_str)
+                    try:
+                        t_str = t_str.encode("utf-8").decode("unicode_escape")
+                        r_str = r_str.encode("utf-8").decode("unicode_escape")
+                    except Exception:
+                        t_str = t_str.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+                        r_str = r_str.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+                    return "edit_file", {"path": p_str, "target": t_str, "replacement": r_str}, True
 
         # 4. Agentic Fallback: Model produced a raw code block instead of JSON!
         # Automatically convert it into a write_file action so code is saved to disk immediately.
@@ -1354,8 +1374,25 @@ class Agent:
         return None, None, False
 
     def stream_turn(self, step=1, user_prompt="", messages=None, spinner_label=None):
-        num_threads = min(os.cpu_count() or 4, 4)
         msgs = messages if messages is not None else self.history
+        # Sliding-window context compression: Preserve system prompt, user prompt, and recent 3 turns in full.
+        # Truncate large intermediate outputs so prompt eval stays lightweight (<1200 tokens) with plenty of room for generation.
+        if len(msgs) > 4:
+            compressed = []
+            for idx, m in enumerate(msgs):
+                if idx <= 1 or idx >= len(msgs) - 3:
+                    compressed.append(m)
+                else:
+                    c = m.get("content", "")
+                    if len(c) > 350:
+                        compressed.append({
+                            "role": m.get("role", "user"),
+                            "content": c[:300] + "\n...[older output truncated to save context]..."
+                        })
+                    else:
+                        compressed.append(m)
+            msgs = compressed
+        num_threads = min(os.cpu_count() or 4, 4)
         payload = {
             "model": self.model,
             "messages": msgs,
