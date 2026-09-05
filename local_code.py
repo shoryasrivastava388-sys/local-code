@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.7.9"
+__version__ = "1.8.0"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -594,6 +594,71 @@ def validate_code(path, content):
     return issues
 
 
+def auto_heal_code(display_path, content, p):
+    """Applies safe, automated healing for common minor syntax and runtime glitches produced by LLMs.
+    Returns (healed_content, final_issues)."""
+    issues = validate_code(display_path, content)
+    if not issues:
+        return content, issues
+
+    healed = content
+    p_suffix = p.suffix.lower()
+
+    # 1. Duplicate parameters in arrow functions, e.g. (t, t) => ... -> (_, t) => ...
+    if any("Duplicate parameter" in iss for iss in issues):
+        cand = re.sub(r'\(([a-zA-Z_$][a-zA-Z0-9_$]*),\s*\1\)\s*=>', r'(_,\1) =>', healed)
+        cand_issues = validate_code(display_path, cand)
+        if len(cand_issues) <= len(issues):
+            healed, issues = cand, cand_issues
+            print(f"   {GREEN}✓ Auto-resolved duplicate parameter in arrow function{RESET}")
+
+    # 2. Unquoted identifier in getElementById, e.g. getElementById(e) -> getElementById("e")
+    if any("is not defined" in iss or "Cannot access" in iss for iss in issues):
+        cand = re.sub(r'getElementById\(([a-zA-Z_][a-zA-Z0-9_]*)\)', r'getElementById("\1")', healed)
+        cand_issues = validate_code(display_path, cand)
+        if len(cand_issues) <= len(issues):
+            healed, issues = cand, cand_issues
+            print(f"   {GREEN}✓ Auto-quoted unquoted identifier in getElementById{RESET}")
+
+    # 3. Brace balancing for missing or extra closing braces
+    if any("Unexpected end of input" in iss for iss in issues):
+        open_b = healed.count('{')
+        close_b = healed.count('}')
+        if open_b > close_b:
+            diff = open_b - close_b
+            if p_suffix in (".html", ".htm") and "</script>" in healed:
+                idx = healed.rfind("</script>")
+                cand = healed[:idx] + ("\n}" * diff) + "\n" + healed[idx:]
+            else:
+                cand = healed + ("\n}" * diff) + "\n"
+            cand_issues = validate_code(display_path, cand)
+            if len(cand_issues) <= len(issues):
+                healed, issues = cand, cand_issues
+                print(f"   {GREEN}✓ Auto-balanced {diff} unclosed brace(s) in '{display_path}'{RESET}")
+        elif close_b > open_b and p_suffix in (".html", ".htm") and "</script>" in healed:
+            diff = close_b - open_b
+            cand = re.sub(r'\}\s*</script>', '</script>', healed)
+            cand_issues = validate_code(display_path, cand)
+            if len(cand_issues) <= len(issues):
+                healed, issues = cand, cand_issues
+                print(f"   {GREEN}✓ Auto-balanced {diff} extra closing brace(s) in '{display_path}'{RESET}")
+
+    # 4. Auto-heal dummy placeholder script tags
+    if p_suffix in (".html", ".htm") and "/* your code here */" in healed.lower():
+        dummy_pat = r"<body>\s*<body>\s*<script>document\.addEventListener\(['\"]DOMContentLoaded['\"],\s*function\(\)\s*\{\s*/\*\s*Your code here\s*\*/\s*\}\);\s*</script>\s*</body>\s*</body>"
+        if re.search(dummy_pat, healed, re.IGNORECASE):
+            cand = re.sub(dummy_pat, "<body>\n<script>", healed, flags=re.IGNORECASE)
+            cand_issues = validate_code(display_path, cand)
+            if len(cand_issues) <= len(issues):
+                healed, issues = cand, cand_issues
+                print(f"   {GREEN}✓ Auto-healed placeholder script wrapper in '{display_path}'{RESET}")
+
+    if healed != content:
+        p.write_text(healed, encoding="utf-8")
+
+    return healed, issues
+
+
 def _clean_arguments(args):
     """Normalize tool arguments from dicts, single-item lists, or strings into a clean dict."""
     if isinstance(args, list):
@@ -1008,33 +1073,7 @@ class Agent:
 
                 p.write_text(new_text, encoding="utf-8")
                 print(f"   {GREEN}✓ Successfully updated '{display_path}'{RESET}")
-                issues = validate_code(display_path, new_text)
-                if any("Unexpected end of input" in iss for iss in issues):
-                    open_b = new_text.count('{')
-                    close_b = new_text.count('}')
-                    if open_b > close_b:
-                        diff = open_b - close_b
-                        cand_text = new_text
-                        if p.suffix.lower() in (".html", ".htm") and "</script>" in new_text:
-                            idx = new_text.rfind("</script>")
-                            cand_text = new_text[:idx] + ("\n}" * diff) + "\n" + new_text[idx:]
-                        else:
-                            cand_text += ("\n}" * diff) + "\n"
-                        cand_issues = validate_code(display_path, cand_text)
-                        if not cand_issues:
-                            new_text = cand_text
-                            p.write_text(new_text, encoding="utf-8")
-                            issues = []
-                            print(f"   {GREEN}✓ Auto-balanced {diff} unclosed brace(s) in '{display_path}' (0 errors){RESET}")
-                    elif close_b > open_b and p.suffix.lower() in (".html", ".htm") and "</script>" in new_text:
-                        diff = close_b - open_b
-                        cand_text = re.sub(r'\}\s*</script>', '</script>', new_text)
-                        cand_issues = validate_code(display_path, cand_text)
-                        if not cand_issues:
-                            new_text = cand_text
-                            p.write_text(new_text, encoding="utf-8")
-                            issues = []
-                            print(f"   {GREEN}✓ Auto-balanced {diff} extra closing brace(s) in '{display_path}' (0 errors){RESET}")
+                new_text, issues = auto_heal_code(display_path, new_text, p)
                 if issues:
                     print(f"   {YELLOW}⚠️  Diagnostics detected issues in '{display_path}':{RESET}")
                     for iss in issues:
@@ -1103,33 +1142,7 @@ class Agent:
 
                 p.write_text(content, encoding="utf-8")
                 print(f"   {GREEN}✓ Written '{display_path}'{RESET}")
-                issues = validate_code(display_path, content)
-                if any("Unexpected end of input" in iss for iss in issues):
-                    open_b = content.count('{')
-                    close_b = content.count('}')
-                    if open_b > close_b:
-                        diff = open_b - close_b
-                        cand_content = content
-                        if p.suffix.lower() in (".html", ".htm") and "</script>" in content:
-                            idx = content.rfind("</script>")
-                            cand_content = content[:idx] + ("\n}" * diff) + "\n" + content[idx:]
-                        else:
-                            cand_content += ("\n}" * diff) + "\n"
-                        cand_issues = validate_code(display_path, cand_content)
-                        if not cand_issues:
-                            content = cand_content
-                            p.write_text(content, encoding="utf-8")
-                            issues = []
-                            print(f"   {GREEN}✓ Auto-balanced {diff} unclosed brace(s) in '{display_path}' (0 errors){RESET}")
-                    elif close_b > open_b and p.suffix.lower() in (".html", ".htm") and "</script>" in content:
-                        diff = close_b - open_b
-                        cand_content = re.sub(r'\}\s*</script>', '</script>', content)
-                        cand_issues = validate_code(display_path, cand_content)
-                        if not cand_issues:
-                            content = cand_content
-                            p.write_text(content, encoding="utf-8")
-                            issues = []
-                            print(f"   {GREEN}✓ Auto-balanced {diff} extra closing brace(s) in '{display_path}' (0 errors){RESET}")
+                content, issues = auto_heal_code(display_path, content, p)
                 if issues:
                     print(f"   {YELLOW}⚠️  Diagnostics detected issues in '{display_path}':{RESET}")
                     for iss in issues:
@@ -1863,40 +1876,7 @@ class Agent:
                         cand.write_text(f_content, encoding="utf-8")
                         print(f"\n{GREEN}✓ Auto-closed unclosed <script> tag in '{cand.name}'{RESET}")
 
-                # Auto-balance unclosed curly braces in HTML/JS if Unexpected end of input
-                open_b = f_content.count('{')
-                close_b = f_content.count('}')
-                if open_b > close_b:
-                    diff = open_b - close_b
-                    cand_content = f_content
-                    if cand.suffix.lower() in (".html", ".htm") and "</script>" in f_content:
-                        idx = f_content.rfind("</script>")
-                        cand_content = f_content[:idx] + ("\n}" * diff) + "\n" + f_content[idx:]
-                    else:
-                        cand_content += ("\n}" * diff) + "\n"
-                    cand_issues = validate_code(str(cand), cand_content)
-                    if not cand_issues:
-                        f_content = cand_content
-                        cand.write_text(f_content, encoding="utf-8")
-                        print(f"\n{GREEN}✓ Auto-balanced {diff} unclosed brace(s) in '{cand.name}' (0 errors){RESET}")
-                elif close_b > open_b and cand.suffix.lower() in (".html", ".htm") and "</script>" in f_content:
-                    diff = close_b - open_b
-                    cand_content = re.sub(r'\}\s*</script>', '</script>', f_content)
-                    cand_issues = validate_code(str(cand), cand_content)
-                    if not cand_issues:
-                        f_content = cand_content
-                        cand.write_text(f_content, encoding="utf-8")
-                        print(f"\n{GREEN}✓ Auto-balanced {diff} extra closing brace(s) in '{cand.name}' (0 errors){RESET}")
-
-                # Auto-heal dummy placeholder script tags causing mismatched script tags
-                if cand.suffix.lower() in (".html", ".htm") and "/* your code here */" in f_content.lower():
-                    dummy_pat = r"<body>\s*<body>\s*<script>document\.addEventListener\(['\"]DOMContentLoaded['\"],\s*function\(\)\s*\{\s*/\*\s*Your code here\s*\*/\s*\}\);\s*</script>\s*</body>\s*</body>"
-                    if re.search(dummy_pat, f_content, re.IGNORECASE):
-                        f_content = re.sub(dummy_pat, "<body>\n<script>", f_content, flags=re.IGNORECASE)
-                        cand.write_text(f_content, encoding="utf-8")
-                        print(f"\n{GREEN}✓ Auto-healed placeholder script wrapper in '{cand.name}'{RESET}")
-
-                issues = validate_code(str(cand), f_content)
+                f_content, issues = auto_heal_code(str(cand), f_content, cand)
                 if issues:
                     fix_match = cand
                     diag_msg = "\n".join(f"- {iss}" for iss in issues)
