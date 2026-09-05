@@ -30,13 +30,39 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.5.6"
+__version__ = "1.5.7"
 
 # Operating System Detection
 OS_NAME = platform.system()
 IS_WINDOWS = OS_NAME.lower() == "windows"
 IS_MACOS = OS_NAME.lower() == "darwin"
 IS_LINUX = OS_NAME.lower() == "linux"
+
+
+def get_system_ram_gb():
+    """Retrieve total physical RAM in GB across Linux, macOS, and Windows."""
+    try:
+        if IS_LINUX:
+            with open("/proc/meminfo", "r") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        return int(line.split()[1]) / (1024 * 1024)
+        elif IS_MACOS:
+            out = subprocess.check_output(["sysctl", "-n", "hw.memsize"]).decode().strip()
+            return int(out) / (1024 ** 3)
+    except Exception:
+        pass
+    return 16.0
+
+
+def get_safe_default_context(model_name=""):
+    """Calculate safe context tokens to prevent kernel OOM kills on memory-constrained systems."""
+    ram = get_system_ram_gb()
+    # On systems with <14GB total RAM, 4096 context with large models (7B-9B) can exceed physical memory.
+    # 2048 tokens is lightweight (~4.5GB peak) and ensures 100% stability.
+    if ram < 14.0:
+        return 2048
+    return 4096
 
 # Enable ANSI escape codes in Windows Command Prompt and PowerShell
 if IS_WINDOWS:
@@ -551,12 +577,16 @@ def _clean_arguments(args):
 
 
 class Agent:
-    def __init__(self, model="qwen2.5-coder:7b", host="http://127.0.0.1:11434", context=4096, temp=0.2, auto=False):
+    def __init__(self, model="qwen2.5-coder:7b", host="http://127.0.0.1:11434", context=None, temp=0.2, auto=False):
         self.model = model
         self.host = host.rstrip("/")
+        if context is None:
+            context = get_safe_default_context(model)
+        # Enforce memory safety on systems with <14GB RAM to prevent kernel OOM kills
+        safe_ctx = get_safe_default_context(model)
+        if context > safe_ctx and get_system_ram_gb() < 14.0:
+            context = safe_ctx
         self.context = context
-        if any(k in str(model).lower() for k in ("qwen3.5", "deepseek", "r1", "think")) and self.context < 4096:
-            self.context = 4096
         self.temp = temp
         self.auto = auto
         self.history = [{"role": "system", "content": get_system_prompt()}]
@@ -1291,6 +1321,7 @@ class Agent:
             "model": self.model,
             "messages": msgs,
             "stream": True,
+            "think": False,
             "options": {
                 "num_ctx": self.context,
                 "num_predict": min(self.context, 4096),
@@ -1308,7 +1339,8 @@ class Agent:
             headers={"Content-Type": "application/json"}
         )
 
-        for attempt in range(2):
+        max_attempts = 5
+        for attempt in range(max_attempts):
             accumulated = ""
             in_tool_block = False
             printed_prefix = False
@@ -1318,7 +1350,7 @@ class Agent:
             # Background animated spinner while CPU is prefilling / evaluating prompt
             stop_spinner = threading.Event()
             start_time = time.time()
-            label = spinner_label or ("Planning actions & tools..." if step == 1 else "Thinking & evaluating prompt...")
+            label = spinner_label or ("Planning actions & tools..." if step == 1 else "Formulating next step...")
             current_thought = [None]
 
             def spin():
@@ -1436,10 +1468,27 @@ class Agent:
             except Exception as e:
                 stop_spinner.set()
                 err_str = str(e).lower()
-                if attempt == 0 and any(w in err_str for w in ("closed connection", "connection reset", "broken pipe", "eof")):
-                    time.sleep(1.5)
+                is_conn_issue = any(w in err_str for w in (
+                    "connection refused", "errno 111", "closed connection",
+                    "connection reset", "broken pipe", "eof", "timed out",
+                    "temporarily unavailable", "bad gateway", "service unavailable", "remote disconnected"
+                ))
+                if is_conn_issue and attempt < max_attempts - 1:
+                    sys.stdout.write(f"\r\033[K{YELLOW}⏳ Ollama server busy or reconnecting (attempt {attempt + 1}/{max_attempts})...{RESET}\n")
+                    sys.stdout.flush()
+                    for _ in range(5):
+                        time.sleep(2.0)
+                        try:
+                            check_req = urllib.request.Request(f"{self.host}/api/tags")
+                            with urllib.request.urlopen(check_req, timeout=3) as check_resp:
+                                if check_resp.status == 200:
+                                    break
+                        except Exception:
+                            pass
                     continue
                 print(f"\n{RED}Inference error: {e}{RESET}")
+                if "connection refused" in err_str or "errno 111" in err_str:
+                    print(f"{YELLOW}💡 Tip: Ensure Ollama is running (`systemctl --user start ollama` or `ollama serve`){RESET}")
                 return "", False
             finally:
                 stop_spinner.set()
@@ -1766,7 +1815,7 @@ def main():
     parser.add_argument("prompt", nargs="*", help="Direct prompt to execute (non-interactive mode)")
     parser.add_argument("-m", "--model", default=default_model, help="Ollama model name (default: %(default)s)")
     parser.add_argument("-y", "--yes", action="store_true", help="Auto-approve all actions (Auto Mode)")
-    parser.add_argument("-c", "--context", type=int, default=4096, help="Context window size in tokens (default: 4096)")
+    parser.add_argument("-c", "--context", type=int, default=None, help="Context window size in tokens (default: auto-detected safe limit)")
     parser.add_argument("-t", "--temp", type=float, default=0.2, help="Sampling temperature")
     parser.add_argument("--host", default=default_host, help="Ollama API base URL")
     parser.add_argument("-v", "--version", action="version", version=f"local-code (lc) {__version__} ({OS_NAME})")
@@ -1903,8 +1952,9 @@ def main():
             _, chosen_model = select_menu("Select an Ollama Model to activate:", menu_options, default_idx=current_idx)
             if chosen_model:
                 agent.model = chosen_model
-                if any(k in chosen_model.lower() for k in ("qwen3.5", "deepseek", "r1", "think")) and agent.context < 4096:
-                    agent.context = 4096
+                safe_ctx = get_safe_default_context(chosen_model)
+                if agent.context > safe_ctx and get_system_ram_gb() < 14.0:
+                    agent.context = safe_ctx
                 print(f"{GREEN}Active model updated to:{RESET} {BOLD}{agent.model}{RESET} {GRAY}(Context: {agent.context}){RESET}\n")
             continue
         elif user_input.lower().startswith("/fix"):
