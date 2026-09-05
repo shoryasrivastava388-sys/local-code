@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.7.1"
+__version__ = "1.7.2"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -59,10 +59,9 @@ def get_safe_default_context(model_name=""):
     """Calculate safe context tokens to prevent kernel OOM kills on memory-constrained systems."""
     ram = get_system_ram_gb()
     m_lower = (model_name or "").lower()
-    # On systems with <14GB RAM, 9B and heavier models safely run at 3072 tokens to leave room for context
+    # On systems with 10GB+ RAM, 7B and 9B models safely run at 4096 tokens with num_predict=-1
     if any(k in m_lower for k in ("9b", "14b", "32b", "70b")):
-        return 3072 if ram < 14.0 else 4096
-    # 7B and lighter models (e.g. qwen2.5-coder:7b) comfortably run at 4096 tokens on 10GB+ RAM
+        return 4096 if ram >= 10.0 else 2048
     if ram < 8.0:
         return 2048
     return 4096
@@ -1467,7 +1466,7 @@ class Agent:
             "think": False,
             "options": {
                 "num_ctx": self.context,
-                "num_predict": min(self.context, 4096),
+                "num_predict": -1,
                 "temperature": self.temp,
                 "repeat_penalty": 1.15,
                 "repeat_last_n": 64,
