@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.6.8"
+__version__ = "1.6.9"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -467,18 +467,23 @@ def validate_code(path, content):
                     "Ensure </html> is the absolute end of the file."
                 )
 
-        # DOM Lifecycle Bug check: script before <body> accessing document.body
+        # DOM Lifecycle Bug check: script before <body> accessing DOM elements or canvas
         body_idx = content_lower.find("<body")
         for sc_match in re.finditer(r"<script(?:\s+[^>]*)?>([\s\S]*?)</script>", content, flags=re.IGNORECASE):
             sc_pos = sc_match.start()
-            sc_code = sc_match.group(1).lower()
-            if body_idx == -1 or sc_pos < body_idx:
-                if any(dom in sc_code for dom in ("document.body", "document.getelementbyid", "document.queryselector")):
-                    if not any(safe in sc_code for safe in ("domcontentloaded", "window.onload", "onload", "defer")):
-                        issues.append(
-                            "DOM Lifecycle Bug: <script> executes before <body> exists and accesses document.body. "
-                            "Wrap your script in window.addEventListener('DOMContentLoaded', () => { ... }) or move <script> inside <body>."
-                        )
+            sc_code = sc_match.group(1)
+            sc_code_lower = sc_code.lower()
+            if body_idx != -1 and sc_pos < body_idx:
+                if not any(safe in sc_code_lower for safe in ("domcontentloaded", "window.onload", "onload", "defer")):
+                    issues.append(
+                        "DOM Lifecycle Bug: <script> executes in <head> before <body> elements exist. "
+                        "Move the <script> tag inside <body> (after HTML elements) or wrap code in window.addEventListener('DOMContentLoaded', () => { ... })."
+                    )
+            if ("canvas." in sc_code or "ctx." in sc_code) and not re.search(r"\b(?:const|let|var)\s+canvas\b", sc_code):
+                issues.append(
+                    "Undeclared DOM Reference: 'canvas' is accessed but never declared. "
+                    "Add 'const canvas = document.getElementById(\"gameCanvas\");' (or document.querySelector('canvas')) before accessing canvas properties."
+                )
 
         # Placeholder / Empty script detection:
         for sc_match in re.finditer(r"<script(?:\s+[^>]*)?>([\s\S]*?)</script>", content, flags=re.IGNORECASE):
