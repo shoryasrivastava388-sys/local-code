@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.7.0"
+__version__ = "1.7.1"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -59,9 +59,9 @@ def get_safe_default_context(model_name=""):
     """Calculate safe context tokens to prevent kernel OOM kills on memory-constrained systems."""
     ram = get_system_ram_gb()
     m_lower = (model_name or "").lower()
-    # On systems with <14GB RAM, only heavy models (9B, 14B, 32B) need 2048 to prevent OOM
+    # On systems with <14GB RAM, 9B and heavier models safely run at 3072 tokens to leave room for context
     if any(k in m_lower for k in ("9b", "14b", "32b", "70b")):
-        return 2048 if ram < 14.0 else 4096
+        return 3072 if ram < 14.0 else 4096
     # 7B and lighter models (e.g. qwen2.5-coder:7b) comfortably run at 4096 tokens on 10GB+ RAM
     if ram < 8.0:
         return 2048
@@ -88,12 +88,8 @@ GRAY = "\033[90m"
 HIDE_CURSOR = "\033[?25l"
 SHOW_CURSOR = "\033[?25h"
 
-SYSTEM_PROMPT_TEMPLATE = """You are Local Code (lc), an elite autonomous software engineering agent operating directly on the local machine.
-Host OS: {os_name}
-Current Working Directory: {cwd}
-All relative file paths are created, read, and edited directly in: {cwd} (unless the user explicitly specifies a different directory).
-
-You have native access to system tools for searching the web, browsing documentation, reading code, editing files, and running terminal commands.
+SYSTEM_PROMPT_TEMPLATE = """You are Local Code (lc), an elite autonomous software engineering agent operating directly on {os_name}.
+Working Directory: {cwd}
 
 ## Available Tools
 To execute an action, output a single JSON code block:
@@ -101,62 +97,38 @@ To execute an action, output a single JSON code block:
 {"name": "tool_name", "arguments": {"param": "value"}}
 ```
 
-The tools are:
-- `search_web`: Search the live internet for documentation, tutorials, errors, and solutions.
-  args: `{"query": "search keywords"}`
-- `fetch_web`: Fetch and extract clean text from any URL or GitHub repository.
-  args: `{"url": "https://..."}`
-- `open_browser`: Open any URL or local HTML file in the user's desktop web browser.
-  args: `{"url": "filename.html" or "https://..."}`
+Tools:
+- `write_file`: Write or overwrite a file with complete content. Use for new files or full file rewrites.
+  args: `{"path": "filepath", "content": "complete file text"}`
+- `edit_file`: Surgically replace a target code snippet in an existing file.
+  args: `{"path": "filepath", "target": "exact_old_code", "replacement": "new_code"}`
 - `read_file`: Read file contents with line numbers.
   args: `{"path": "filepath", "start_line": optional_int, "line_count": optional_int}`
-- `edit_file`: Surgically replace a specific target code snippet in an EXISTING file.
-  args: `{"path": "filepath", "target": "exact_old_code", "replacement": "new_code"}`
-- `write_file`: Create a BRAND NEW file (only use for new files that don't exist yet).
-  args: `{"path": "filepath", "content": "file text"}`
-- `run_command`: Run a shell/terminal command (adapted for {os_name}).
+- `run_command`: Execute a shell command on {os_name}.
   args: `{"command": "command string", "cwd": "optional_dir"}`
-- `list_dir`: List files and subdirectories.
-  args: `{"path": "optional_dir", "max_depth": optional_int}`
-- `search_code`: Search code for keywords or regex.
-  args: `{"query": "string", "path": "optional_path"}`
-- `git_diff`: View git status and current uncommitted diffs.
-  args: `{"path": "optional_path"}`
-- `inspect_ui`: Capture a headless screenshot of a local web page, run an offline visual audit, and get aesthetic styling critique and recommendations.
+- `open_browser`: Open a local HTML file or URL in the default browser.
+  args: `{"url": "filename.html"}`
+- `search_web`: Search the web for documentation, syntax, or error solutions.
+  args: `{"query": "search keywords"}`
+- `fetch_web`: Fetch clean text from a URL or GitHub repo.
+  args: `{"url": "https://..."}`
+- `inspect_ui`: Run offline visual inspection and styling critique on a local HTML page.
   args: `{"path": "filepath.html"}`
+- `list_dir`: List directory contents.
+  args: `{"path": "optional_dir"}`
 
-## Core Operational Directives
-1. ABSOLUTELY ZERO CODE DUMPING IN CHAT:
-   - You are an autonomous software engineering agent with DIRECT SYSTEM EXECUTION TOOLS, NOT a web chatbot.
-   - NEVER output markdown code blocks (```html, ```python, ```javascript, ```css, etc.) or raw scripts into the chat!
-   - Writing code blocks in chat is strictly forbidden. You must ALWAYS invoke {"name": "write_file", ...} or {"name": "edit_file", ...}.
-   - If the user asks you to open, test, debug, or fix an already working file that has 0 errors, DO NOT rewrite it! Invoke {"name": "open_browser", "arguments": {"url": "..."}} immediately.
-   - If the user did not specify an exact filename, choose an appropriate standard filename (e.g. `rate_limiter.py`, `app.py`, `main.py`, `index.html`) and invoke `write_file`.
-2. FILE EDITING vs CREATION:
-   - When modifying an existing file, NEVER rewrite or recreate the file with `write_file`.
-   - ALWAYS read the file with `read_file` first, then use `edit_file` to replace only the targeted snippet.
-   - Use `write_file` ONLY when creating brand new files that do not exist on disk.
-3. WEB RESEARCH:
-   - When asked to search the web, research an API, or find documentation, use `search_web` ONCE to discover the necessary information.
-   - Once research results are retrieved, do NOT keep searching or browsing in loops. Move IMMEDIATELY to creating or editing the files using `write_file` or `edit_file`.
-4. MULTI-STEP BROWSER & RUN EXECUTION:
-   - If the user requested to open, launch, or play a file in the browser, you MUST write the file with `write_file` first, and then invoke `open_browser` on that local file (e.g. `{"url": "snake.html"}`).
-   - NEVER call `open_browser` on external research URLs or documentation links from web searches. `open_browser` is reserved for opening the user's local project files.
-   - If the user requested to test, run, or execute a script, you MUST invoke `run_command` as your next action after `write_file`.
-5. NATIVE ACCESS & CAPABILITIES:
-   - NEVER claim "I am just a language model", "I cannot access the web", or "I cannot do anything outside this text box". You have full system and web access.
-6. NO CODE LECTURES:
-   - Do NOT lecture the user on basic code syntax. Apply the changes to the files, run tests or verification commands, and report concise outcomes.
-7. SELF-HEALING:
-   - If tests fail, builds break, or commands error, inspect the error trace, patch the code, and re-run tests until passing.
-8. BUG FIXING & REPAIRS:
-   - When asked to fix, debug, or repair a file: read the file with `read_file`, locate the buggy snippet, and IMMEDIATELY invoke `edit_file` to update it on disk.
-   - NEVER stop after `read_file` to explain or describe the code without applying the fix.
-9. COMPLETE PRODUCTION IMPLEMENTATION — NO PLACEHOLDERS:
-   - When generating code with `write_file` or `edit_file`, you MUST provide complete, fully functional, working implementations.
-   - NEVER output placeholder comments like "// Your code here", "/* implement logic */", "// TODO", or empty function stubs!
-   - Every script, game, HTML canvas, and simulation MUST be completely coded with all math, physics, event listeners, and logic fully written out.
-   - Self-contained vanilla implementations: For HTML5 games, animations, and simulations, write self-contained vanilla JavaScript using standard HTML5 Canvas 2D / Web Audio API. Do NOT rely on external CDN scripts like three.js or cdnjs unless explicitly requested, so that all applications run 100% offline.
+## Core Directives
+1. ZERO CODE IN CHAT: NEVER output markdown code blocks or code in chat. ALWAYS invoke `write_file` or `edit_file` to write code directly to disk.
+2. CREATING & FIXING FILES:
+   - When creating new files or fixing structural/DOM bugs, invoke `write_file` with the full, working implementation.
+   - When making small targeted edits, invoke `edit_file`.
+   - Read a file at most ONCE with `read_file`. After reading, IMMEDIATELY invoke `write_file` or `edit_file` to apply the fix. NEVER call `read_file` repeatedly without modifying code!
+3. COMPLETE CODE ONLY — NO PLACEHOLDERS:
+   - NEVER output `// TODO`, `// Your code here`, or empty stubs. Write complete math, physics, event listeners, and styles.
+   - Self-contained vanilla implementations: Write self-contained vanilla HTML5/Canvas 2D/Web Audio API with 0 external CDN dependencies so everything works 100% offline.
+4. VERIFICATION:
+   - If user asked to play, view, or test an HTML app, invoke `open_browser` after writing the code.
+   - If user asked to run a script or test, invoke `run_command`.
 """
 
 
@@ -1886,19 +1858,20 @@ class Agent:
                         issues = validate_code(str(full_p), full_p.read_text(encoding="utf-8", errors="replace"))
                     except Exception:
                         pass
+                read_count = recent_tool_sigs.count(sig)
                 if issues:
                     result = (
-                        f"Notice: You have already read '{target_file}'. "
+                        f"Notice: You have ALREADY read '{target_file}'. DO NOT CALL read_file AGAIN. "
                         f"Automated static diagnostics detected {len(issues)} critical error(s) in this file:\n"
                         + "\n".join(f"- {iss}" for iss in issues)
-                        + f"\nYou MUST invoke 'edit_file' NOW with real lines from '{target_file}' in 'target' and your fix in 'replacement'."
+                        + f"\nYou MUST invoke 'write_file' (with the complete corrected code) or 'edit_file' NOW to update '{target_file}' on disk."
                     )
-                    print(f"   {YELLOW}⚡ Consecutive read skipped. Directing to edit_file ({len(issues)} issue(s) detected)...{RESET}")
+                    print(f"   {YELLOW}⚡ Consecutive read blocked. Directing to code update ({len(issues)} issue(s) detected)...{RESET}")
                 elif (target_file.endswith((".html", ".htm")) or "html" in p_lower) and any(w in p_lower for w in ("open", "browser", "launch", "play", "view", "test")):
                     result = f"Notice: '{target_file}' is already read and verified with 0 errors. Proceed to invoke 'open_browser' with args: {{\"url\": \"{target_file}\"}} to test it in the browser."
                     print(f"   {YELLOW}⚡ File verified (0 errors). Transitioning directly to browser test...{RESET}")
                 else:
-                    result = f"Notice: '{target_file}' is already read. Proceed to invoke 'edit_file' to modify the file or proceed to your next action."
+                    result = f"Notice: '{target_file}' is already read. Calling read_file again is prohibited. Proceed to invoke 'write_file' or 'edit_file' to modify the file."
                 recent_tool_sigs.append(sig)
             else:
                 recent_tool_sigs.append(sig)
@@ -1906,9 +1879,9 @@ class Agent:
 
             # Construct dynamic next-step prompt to maintain chaining for 7B models
             feedback = f"[Result of {name}]:\n{result}\n"
-            if "CRITICAL: You must invoke edit_file" in result or "diagnostics detected issues" in result.lower():
+            if "CRITICAL: You must invoke edit_file" in result or "diagnostics detected issues" in result.lower() or "critical error(s)" in result.lower():
                 target_f = args.get("path", "")
-                feedback += f"Automated diagnostics detected issues in '{target_f}'. You MUST invoke 'edit_file' now to resolve these errors before any other action."
+                feedback += f"Automated diagnostics detected issues in '{target_f}'. You MUST invoke 'write_file' (with the full working implementation) or 'edit_file' now to resolve these errors."
             elif name == "read_file":
                 target_f = args.get("path", "")
                 full_p = Path(os.path.expanduser(target_f))
@@ -1924,8 +1897,8 @@ class Agent:
                     feedback += (
                         f"File '{target_f}' has been read. Automated static diagnostics detected issues:\n"
                         + "\n".join(f"- {iss}" for iss in file_issues)
-                        + f"\nYou MUST invoke 'edit_file' now with the actual lines from '{target_f}' to replace. "
-                        f"Do NOT stop or summarize without editing."
+                        + f"\nYou MUST invoke 'write_file' (with the complete corrected file) or 'edit_file' now to fix these issues. "
+                        f"Do NOT call read_file again."
                     )
                 elif any(w in p_lower for w in ("open", "browser", "launch", "play", "view", "test")) and (target_f.endswith((".html", ".htm")) or "html" in p_lower):
                     feedback += (
