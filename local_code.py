@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.5.9"
+__version__ = "1.6.0"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -149,6 +149,11 @@ The tools are:
 8. BUG FIXING & REPAIRS:
    - When asked to fix, debug, or repair a file: read the file with `read_file`, locate the buggy snippet, and IMMEDIATELY invoke `edit_file` to update it on disk.
    - NEVER stop after `read_file` to explain or describe the code without applying the fix.
+9. COMPLETE PRODUCTION IMPLEMENTATION — NO PLACEHOLDERS:
+   - When generating code with `write_file` or `edit_file`, you MUST provide complete, fully functional, working implementations.
+   - NEVER output placeholder comments like "// Your code here", "/* implement logic */", "// TODO", or empty function stubs!
+   - Every script, game, HTML canvas, and simulation MUST be completely coded with all math, physics, event listeners, and logic fully written out.
+   - Self-contained vanilla implementations: For HTML5 games, animations, and simulations, write self-contained vanilla JavaScript using standard HTML5 Canvas 2D / Web Audio API. Do NOT rely on external CDN scripts like three.js or cdnjs unless explicitly requested, so that all applications run 100% offline.
 """
 
 
@@ -471,6 +476,18 @@ def validate_code(path, content):
                             "DOM Lifecycle Bug: <script> executes before <body> exists and accesses document.body. "
                             "Wrap your script in window.addEventListener('DOMContentLoaded', () => { ... }) or move <script> inside <body>."
                         )
+
+        # Placeholder / Empty script detection:
+        for sc_match in re.finditer(r"<script(?:\s+[^>]*)?>([\s\S]*?)</script>", content, flags=re.IGNORECASE):
+            if re.search(r"\bsrc\s*=", sc_match.group(0), re.IGNORECASE):
+                continue
+            sc_code = sc_match.group(1).strip()
+            code_no_comments = re.sub(r"//.*|/\*[\s\S]*?\*/", "", sc_code).strip()
+            if len(code_no_comments) < 30:
+                issues.append(
+                    "Incomplete Implementation: The <script> tag contains placeholder comments ('// Your code here') or empty stubs without working JavaScript logic. "
+                    "You must write the complete, functional JavaScript code inside the <script> tags using 'edit_file' or 'write_file'."
+                )
 
         # Sandboxed Node VM runtime verification for embedded <script> tags
         if subprocess.run("which node", shell=True, capture_output=True).returncode == 0:
