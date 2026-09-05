@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.6.6"
+__version__ = "1.6.7"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -491,6 +491,21 @@ def validate_code(path, content):
                     "Incomplete Implementation: The <script> tag contains placeholder comments ('// Your code here') or empty stubs without working JavaScript logic. "
                     "You must write the complete, functional JavaScript code inside the <script> tags using 'edit_file' or 'write_file'."
                 )
+
+            empty_fn_matches = re.findall(r'function\s+([a-zA-Z0-9_$]+)\s*\([^)]*\)\s*\{\s*(?://[^\n]*\s*|/\*[\s\S]*?\*/\s*)*\}', sc_code)
+            for fn_name in empty_fn_matches:
+                issues.append(
+                    f"Incomplete Implementation: Function '{fn_name}' has an empty body containing only placeholder comments. "
+                    f"You must implement complete working logic for '{fn_name}' using 'edit_file'."
+                )
+
+            trailing_stub_comments = re.findall(r'//\s*([^\n]+)\s*\n\s*\}', sc_code)
+            for stub_c in trailing_stub_comments:
+                if any(w in stub_c.lower() for w in ("update", "draw", "render", "logic", "paddles", "ball", "todo", "code", "implement")):
+                    issues.append(
+                        f"Incomplete Implementation: Stub comment '// {stub_c}' detected without code implementation. "
+                        f"You must implement complete working logic using 'edit_file'."
+                    )
 
         # Sandboxed Node VM runtime verification for embedded <script> tags
         if subprocess.run("which node", shell=True, capture_output=True).returncode == 0:
