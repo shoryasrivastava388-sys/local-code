@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.7.8"
+__version__ = "1.7.9"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -125,6 +125,7 @@ Tools:
 3. COMPLETE CODE ONLY — NO PLACEHOLDERS:
    - NEVER output `// TODO`, `// Your code here`, or empty stubs. Write complete math, physics, event listeners, and styles.
    - Self-contained vanilla implementations: Write self-contained vanilla HTML5/Canvas 2D/Web Audio API with 0 external CDN dependencies so everything works 100% offline.
+   - CONCISE & COMPLETE: Keep implementations compact, elegant, and under 250 lines per file. Avoid bloated CSS and redundant boilerplate so the file generates completely in a single step without truncation.
 4. VERIFICATION:
    - If user asked to play, view, or test an HTML app, invoke `open_browser` after writing the code.
    - If user asked to run a script or test, invoke `run_command`.
@@ -1082,6 +1083,15 @@ class Agent:
                 # Auto-sanitize prompt truncation artifacts
                 if "...[truncated" in content or "...[older" in content or "...[code" in content:
                     content = re.sub(r"\.\.\.\[(?:truncated|older|code)[^\]]*\]\.\.\.", "", content)
+
+                # Reject severely truncated HTML files that cut off before <body>
+                if p.suffix.lower() in (".html", ".htm") and "<head>" in content.lower() and "</head>" not in content.lower() and "<body" not in content.lower():
+                    if is_new and p.exists():
+                        p.unlink()
+                    return (
+                        f"Action rejected: '{display_path}' was truncated mid-generation before <body> could be written. "
+                        f"Invoke 'write_file' to write a complete, concise HTML document under 200 lines."
+                    )
 
                 # Auto-close unclosed script tags at EOF if generation stopped early
                 if p.suffix.lower() in (".html", ".htm"):
