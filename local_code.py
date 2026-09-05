@@ -440,6 +440,10 @@ def validate_code(path, content):
             issues.append("Malformed HTML: <head> tag is opened but never closed with </head>.")
         if "<body" not in content_lower:
             issues.append("Malformed HTML: Document is missing <body> opening tag.")
+        open_scripts = len(re.findall(r"<script(?:\s+[^>]*)?>", content, flags=re.IGNORECASE))
+        close_scripts = len(re.findall(r"</script>", content, flags=re.IGNORECASE))
+        if open_scripts != close_scripts:
+            issues.append(f"Malformed HTML: Mismatched script tags ({open_scripts} '<script>' vs {close_scripts} '</script>'). Ensure all JavaScript code is properly wrapped inside matching <script>...</script> tags.")
 
         # Trailing garbage/commentary check after </html>
         if "</html>" in content_lower:
