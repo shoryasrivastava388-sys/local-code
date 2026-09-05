@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.7.3"
+__version__ = "1.7.4"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -1052,6 +1052,19 @@ class Agent:
                 if p.suffix.lower() in (".html", ".htm") and "</html>" in content.lower():
                     end_idx = content.lower().rfind("</html>")
                     content = content[:end_idx + 7].strip() + "\n"
+
+                # Auto-sanitize prompt truncation artifacts
+                if "...[truncated" in content or "...[older" in content or "...[code" in content:
+                    content = re.sub(r"\.\.\.\[(?:truncated|older|code)[^\]]*\]\.\.\.", "", content)
+
+                # Auto-close unclosed script tags at EOF if generation stopped early
+                if p.suffix.lower() in (".html", ".htm"):
+                    script_open = len(re.findall(r"<script\b", content, re.IGNORECASE))
+                    script_close = len(re.findall(r"</script>", content, re.IGNORECASE))
+                    if script_open > script_close:
+                        content += "\n</script>\n</body>\n</html>\n"
+                        print(f"   {GREEN}✓ Auto-closed unclosed <script> tag at EOF{RESET}")
+
                 p.write_text(content, encoding="utf-8")
                 print(f"   {GREEN}✓ Written '{display_path}'{RESET}")
                 issues = validate_code(display_path, content)
@@ -1451,7 +1464,7 @@ class Agent:
                 elif idx == len(msgs) - 1:
                     c = m.get("content", "")
                     if len(c) > 3000:
-                        compressed.append({"role": m.get("role", "user"), "content": c[:2800] + "\n...[truncated]..."})
+                        compressed.append({"role": m.get("role", "user"), "content": c[:2800]})
                     else:
                         compressed.append(m)
                 else:
@@ -1459,17 +1472,17 @@ class Agent:
                     c = m.get("content", "")
                     if role == "assistant":
                         # Condense huge write_file / edit_file code blocks in older turns
-                        condensed = re.sub(r'("content"\s*:\s*)"(?:[^"\\]|\\.)*"', r'\1"...[code previously written to disk]..."', c)
-                        condensed = re.sub(r'("replacement"\s*:\s*)"(?:[^"\\]|\\.)*"', r'\1"...[replacement applied]..."', condensed)
+                        condensed = re.sub(r'("content"\s*:\s*)"(?:[^"\\]|\\.)*"', r'\1"..."', c)
+                        condensed = re.sub(r'("replacement"\s*:\s*)"(?:[^"\\]|\\.)*"', r'\1"..."', condensed)
                         if len(condensed) > 350:
-                            condensed = condensed[:300] + "...[tool call truncated]..."
+                            condensed = condensed[:300]
                         compressed.append({"role": role, "content": condensed})
                     else:
                         # Condense intermediate tool output (older file reads or command runs)
                         if len(c) > 350:
                             compressed.append({
                                 "role": role,
-                                "content": c[:250] + "\n...[older output truncated to save context]..."
+                                "content": c[:250]
                             })
                         else:
                             compressed.append(m)
@@ -1724,7 +1737,7 @@ class Agent:
         ]
         return any(re.search(q, p) for q in starters)
 
-    def run(self, user_prompt, max_steps=20):
+    def run(self, user_prompt, max_steps=6):
         # Sanitize pasted escape sequences from terminals (e.g. ^[E or \x1b[E)
         user_prompt = re.sub(r'(\x1b\[E|\^[E])', '\n', user_prompt).strip()
         if not user_prompt:
@@ -1764,7 +1777,7 @@ class Agent:
         if cand and cand.is_file():
             try:
                 f_content = cand.read_text(encoding="utf-8", errors="replace")
-                # Auto-heal trailing commentary/backticks after </html> for HTML files
+                # Auto-sanitize trailing commentary after </html>
                 if cand.suffix.lower() in (".html", ".htm") and "</html>" in f_content.lower():
                     end_idx = f_content.lower().rfind("</html>")
                     trailing_text = f_content[end_idx + 7:].strip()
@@ -1772,6 +1785,21 @@ class Agent:
                         f_content = f_content[:end_idx + 7].strip() + "\n"
                         cand.write_text(f_content, encoding="utf-8")
                         print(f"\n{GREEN}✓ Auto-sanitized {len(trailing_text)} characters of trailing commentary after </html>{RESET}")
+
+                # Auto-heal leaked prompt truncation artifacts
+                if "...[truncated" in f_content or "...[older" in f_content or "...[code" in f_content:
+                    f_content = re.sub(r"\.\.\.\[(?:truncated|older|code)[^\]]*\]\.\.\.", "", f_content)
+                    cand.write_text(f_content, encoding="utf-8")
+                    print(f"\n{GREEN}✓ Auto-sanitized leaked prompt marker in '{cand.name}'{RESET}")
+
+                # Auto-close unclosed script tags at EOF if generation stopped early
+                if cand.suffix.lower() in (".html", ".htm"):
+                    script_open = len(re.findall(r"<script\b", f_content, re.IGNORECASE))
+                    script_close = len(re.findall(r"</script>", f_content, re.IGNORECASE))
+                    if script_open > script_close:
+                        f_content += "\n</script>\n</body>\n</html>\n"
+                        cand.write_text(f_content, encoding="utf-8")
+                        print(f"\n{GREEN}✓ Auto-closed unclosed <script> tag in '{cand.name}'{RESET}")
 
                 # Auto-heal dummy placeholder script tags causing mismatched script tags
                 if cand.suffix.lower() in (".html", ".htm") and "/* your code here */" in f_content.lower():
@@ -1894,6 +1922,11 @@ class Agent:
             # Loop detection / anti-repetition guard:
             sig = (name, json.dumps(args, sort_keys=True))
             p_lower = user_prompt.lower()
+            if len(recent_tool_sigs) >= 4:
+                last_4 = [s[0] for s in recent_tool_sigs[-4:]]
+                if last_4 in (["write_file", "read_file", "write_file", "read_file"], ["read_file", "write_file", "read_file", "write_file"]):
+                    print(f"   {YELLOW}⚡ Alternating read/write loop detected. Halting repetition.{RESET}")
+                    break
             if recent_tool_sigs.count(sig) >= 1 and name in ("search_web", "fetch_web"):
                 fn_match = re.search(r"([~./\w_-]+/[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c)|\b[\w-]+\.(?:py|js|ts|html|css|sh|json|rs|go|cpp|c))\b", user_prompt, re.IGNORECASE)
                 target_file = fn_match.group(1) if fn_match else "the requested code file"
