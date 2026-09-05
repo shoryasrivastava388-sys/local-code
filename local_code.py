@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.6.1"
+__version__ = "1.6.2"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -573,9 +573,10 @@ def validate_code(path, content):
     elif p_str.endswith(".js"):
         if subprocess.run("which node", shell=True, capture_output=True).returncode == 0:
             try:
-                res = subprocess.run(["node", "-c", "-e", content], capture_output=True, text=True, timeout=5)
+                res = subprocess.run(["node", "--check"], input=content, capture_output=True, text=True, timeout=5)
                 if res.returncode != 0 and res.stderr:
-                    first_err = res.stderr.strip().splitlines()[0]
+                    err_lines = [l for l in res.stderr.strip().splitlines() if not l.startswith("Node.js") and "at " not in l]
+                    first_err = err_lines[0] if err_lines else res.stderr.strip().splitlines()[0]
                     issues.append(f"JavaScript Syntax Error: {first_err}")
             except Exception:
                 pass
@@ -1367,6 +1368,12 @@ class Agent:
                                 or new_lines >= max(20, int(existing_lines * 0.7))
                             )
                             if not is_full_doc:
+                                if target_p.suffix.lower() in (".html", ".htm") and (lang or "").lower() in ("javascript", "js"):
+                                    old_html = target_p.read_text(encoding="utf-8", errors="replace")
+                                    ph_match = re.search(r"//\s*Your code here|/\*\s*Your code here\s*\*/|//\s*TODO", old_html, re.IGNORECASE)
+                                    if ph_match:
+                                        clean_js = re.sub(r"^[`'\"]+|[`'\"]+\s*\}*\s*\}*$", "", code).strip()
+                                        return "edit_file", {"path": str(target_p), "target": ph_match.group(0), "replacement": clean_js}, True
                                 continue
 
                     return "write_file", {"path": filename, "content": code}, True
