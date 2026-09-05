@@ -32,7 +32,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.8.2"
+__version__ = "1.8.3"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -93,12 +93,18 @@ SYSTEM_PROMPT_TEMPLATE = """You are Local Code (lc), an elite autonomous softwar
 Working Directory: {cwd}
 
 ## Available Tools
-To execute an action, output a single JSON code block:
+To execute an action, output a single JSON object:
 ```json
 {"name": "tool_name", "arguments": {"param": "value"}}
 ```
+If all actions are complete and no more tools are needed, output:
+```json
+{"name": "done", "arguments": {"message": "Summary of what was created or fixed"}}
+```
 
 Tools:
+- `done`: Signal completion when all work is finished.
+  args: `{"message": "explanation"}`
 - `write_file`: Write or overwrite a file with complete content. Use for new files or full file rewrites.
   args: `{"path": "filepath", "content": "complete file text"}`
 - `edit_file`: Surgically replace a target code snippet in an existing file.
@@ -563,6 +569,14 @@ def validate_code(path, content):
                 except Exception:
                     pass
 
+        # Static logic checks for HTML
+        if "contenteditable" in content.lower() and re.search(r'\bthis\.value\b', content) and "(this.value !==" not in content:
+            issues.append("DOM Error: 'this.value' accessed on contenteditable element (use 'this.innerText' instead)")
+        if re.search(r'else\s+if\s*\(\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*&&[^)]*\)\s*\{\s*\1\s*=', content):
+            issues.append("Logic Error: inverted condition in state selector (testing truthy variable before assigning it, should be '!')")
+        if "requestAnimationFrame" in content and "function update" in content and "update()" not in content:
+            issues.append("Logic Warning: 'function update' is defined but 'update()' is never invoked in the game loop")
+
     # 2. Python syntax and AST checks
     elif p_str.endswith(".py"):
         try:
@@ -679,7 +693,36 @@ def auto_heal_code(display_path, content, p):
             cand_issues = validate_code(display_path, cand)
             if len(cand_issues) < len(issues):
                 healed, issues = cand, cand_issues
-                print(f"   {GREEN}✓ Auto-trimmed incomplete trailing token in '{display_path}'{RESET}")
+    # 6. Auto-heal contenteditable element .value property accesses
+    if p_suffix in (".html", ".htm", ".js") and "contenteditable" in healed.lower() and ".value" in healed:
+        cand = re.sub(r'(\bthis|\b[a-zA-Z_$][a-zA-Z0-9_$]*)\.value(\b(?:\.trim|\.length|\.split|\s*[,;\+\-\)]))', r'(\1.value !== undefined ? \1.value : (\1.innerText || ""))\2', healed)
+        if cand != healed:
+            cand_issues = validate_code(display_path, cand)
+            if len(cand_issues) <= len(issues):
+                healed, issues = cand, cand_issues
+                print(f"   {GREEN}✓ Auto-healed .value property on contenteditable element in '{display_path}'{RESET}")
+
+    # 7. Auto-heal inverted condition logic in node/state pickers
+    if p_suffix in (".html", ".htm", ".js"):
+        cand = re.sub(
+            r'else\s+if\s*\(\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*&&([^)]*)\)\s*\{\s*\1\s*=',
+            r'else if (!\1 &&\2) {\n    \1 =',
+            healed
+        )
+        if cand != healed:
+            cand_issues = validate_code(display_path, cand)
+            if len(cand_issues) <= len(issues):
+                healed, issues = cand, cand_issues
+                print(f"   {GREEN}✓ Auto-healed inverted condition guard in '{display_path}'{RESET}")
+
+    # 8. Auto-heal single-line compound Python statements
+    if p_suffix == ".py" and any("SyntaxError" in iss for iss in issues):
+        cand = re.sub(r':\s*(try|while|for|if|with)\b', r':\n    \1', healed)
+        if cand != healed:
+            cand_issues = validate_code(display_path, cand)
+            if len(cand_issues) < len(issues):
+                healed, issues = cand, cand_issues
+                print(f"   {GREEN}✓ Auto-unpacked compound Python statements in '{display_path}'{RESET}")
 
     if healed != content:
         p.write_text(healed, encoding="utf-8")
@@ -1369,13 +1412,27 @@ class Agent:
         """Extract tool call using markdown blocks, balanced-brace parsing, and raw JSON fallback.
         Also provides an agentic fallback: if the model produced a code block instead of JSON,
         automatically converts it into a write_file tool call so code is saved to disk."""
+        def _parse_candidate(obj):
+            if isinstance(obj, dict):
+                if obj.get("name") in ("done", "finish", "respond", "response"):
+                    raw_args = obj.get("arguments") or {}
+                    msg = raw_args.get("message") or raw_args.get("response") or obj.get("message") or obj.get("response") or ""
+                    return None, {"message": msg}, False
+                elif "name" in obj and ("arguments" in obj or "parameters" in obj):
+                    raw_args = obj.get("arguments") if "arguments" in obj else obj.get("parameters")
+                    return obj["name"], _clean_arguments(raw_args), True
+                elif "response" in obj or "message" in obj:
+                    msg = obj.get("response") or obj.get("message") or ""
+                    return None, {"message": msg}, False
+            return None, {}, False
+
         # 1. Try finding markdown code block with json
         blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
         for b in blocks:
             data = Agent.robust_json_loads(b)
-            if isinstance(data, dict) and "name" in data and ("arguments" in data or "parameters" in data):
-                raw_args = data.get("arguments") if "arguments" in data else data.get("parameters")
-                return data["name"], _clean_arguments(raw_args), True
+            name, args, is_tool = _parse_candidate(data)
+            if is_tool or (name is None and args.get("message")):
+                return name, args, is_tool
 
         # 2. Balanced brace scan for {"name": ..., "arguments": ...}
         # Handles nested braces, template literal backticks, code containing CSS/JS, and escaped quotes properly
@@ -1408,18 +1465,18 @@ class Agent:
                         if brace_count == 0:
                             candidate = text[start:i+1]
                             data = Agent.robust_json_loads(candidate)
-                            if isinstance(data, dict) and "name" in data and ("arguments" in data or "parameters" in data):
-                                raw_args = data.get("arguments") if "arguments" in data else data.get("parameters")
-                                return data["name"], _clean_arguments(raw_args), True
+                            name, args, is_tool = _parse_candidate(data)
+                            if is_tool:
+                                return name, args, True
                             break
 
         # 3. Fallback: try whole string if it starts and ends with { }
         stripped = text.strip()
         if stripped.startswith("{") and stripped.endswith("}"):
             data = Agent.robust_json_loads(stripped)
-            if isinstance(data, dict) and "name" in data and ("arguments" in data or "parameters" in data):
-                raw_args = data.get("arguments") if "arguments" in data else data.get("parameters")
-                return data["name"], _clean_arguments(raw_args), True
+            name, args, is_tool = _parse_candidate(data)
+            if is_tool or (name is None and args.get("message")):
+                return name, args, is_tool
 
         # 3.5 Fallback: Robust regex extraction if JSON was malformed or truncated (only when is_final=True)
         if is_final and ('"name"' in text or '{"name":' in text or '"write_file"' in text or '"edit_file"' in text):
@@ -1559,7 +1616,7 @@ class Agent:
 
         return None, None, False
 
-    def stream_turn(self, step=1, user_prompt="", messages=None, spinner_label=None):
+    def stream_turn(self, step=1, user_prompt="", messages=None, spinner_label=None, enforce_json=True):
         msgs = messages if messages is not None else self.history
         # Sliding-window context compression: Preserve system prompt, user prompt, and recent turns compactly.
         # Ensure prompt stays lightweight (<1000 tokens) so CPU eval is <12s and max context is reserved for generation.
@@ -1610,15 +1667,17 @@ class Agent:
                 "stop": ["<|im_end|>", "<|endoftext|>"]
             }
         }
+        if messages is None and enforce_json:
+            payload["format"] = "json"
         url = f"{self.host}/api/chat"
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"}
-        )
 
         max_attempts = 5
         for attempt in range(max_attempts):
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"}
+            )
             accumulated = ""
             in_tool_block = False
             printed_prefix = False
@@ -1870,7 +1929,7 @@ class Agent:
                     "Provide clear code snippets inside markdown blocks if helpful."
                 )
             }
-            res, was_streamed = self.stream_turn(step=1, user_prompt=user_prompt, messages=temp_history, spinner_label="Formulating explanation...")
+            res, was_streamed = self.stream_turn(step=1, user_prompt=user_prompt, messages=temp_history, spinner_label="Formulating explanation...", enforce_json=False)
             if res:
                 self.history.append({"role": "assistant", "content": res})
             return
@@ -2009,7 +2068,9 @@ class Agent:
                     continue
 
                 if res.strip():
-                    clean_res = re.sub(r"```[a-zA-Z0-9_-]*\s*\n.*?```", "", res, flags=re.DOTALL).strip()
+                    clean_res = args.get("message") if (args and isinstance(args, dict) and args.get("message")) else ""
+                    if not clean_res:
+                        clean_res = re.sub(r"```[a-zA-Z0-9_-]*\s*\n.*?```", "", res, flags=re.DOTALL).strip()
                     if clean_res and not re.search(r'^\s*(?:```|\{\s*"name")', clean_res):
                         print(f"\n{BOLD}{CYAN}Qwen:{RESET} {clean_res}")
                     else:
