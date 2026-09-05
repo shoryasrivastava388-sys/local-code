@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.6.3"
+__version__ = "1.6.4"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -1193,20 +1193,34 @@ class Agent:
 
     @staticmethod
     def robust_json_loads(text):
-        """Parses JSON even if it contains unescaped control characters (newlines) or trailing commas."""
+        """Parses JSON even if it contains unescaped control characters (newlines), trailing commas, or template literal backticks."""
+        if not text:
+            return None
+        def fix_backticks(s):
+            def repl(m):
+                key = m.group(1)
+                val = m.group(2)
+                return f"{key}{json.dumps(val)}"
+            return re.sub(r'("[a-zA-Z0-9_]+"\s*:\s*)`([\s\S]*?)`', repl, s)
+
+        s_fixed = fix_backticks(text)
         try:
-            return json.loads(text, strict=False)
+            return json.loads(s_fixed, strict=False)
         except Exception:
             pass
-        cleaned = re.sub(r",\s*([\]}])", r"\1", text)
+        cleaned = re.sub(r",\s*([\]}])", r"\1", s_fixed)
         try:
             return json.loads(cleaned, strict=False)
+        except Exception:
+            pass
+        try:
+            return json.loads(text, strict=False)
         except Exception:
             pass
         return None
 
 
-    def extract_tool_call(self, text, user_prompt="", step=1):
+    def extract_tool_call(self, text, user_prompt="", step=1, is_final=True):
         """Extract tool call using markdown blocks, balanced-brace parsing, and raw JSON fallback.
         Also provides an agentic fallback: if the model produced a code block instead of JSON,
         automatically converts it into a write_file tool call so code is saved to disk."""
@@ -1219,12 +1233,12 @@ class Agent:
                 return data["name"], _clean_arguments(raw_args), True
 
         # 2. Balanced brace scan for {"name": ..., "arguments": ...}
-        # Handles nested braces, code containing CSS/JS, and escaped quotes properly
+        # Handles nested braces, template literal backticks, code containing CSS/JS, and escaped quotes properly
         pattern = re.compile(r'\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"(?:arguments|parameters)"\s*:', flags=re.DOTALL)
         for m in pattern.finditer(text):
             start = m.start()
             brace_count = 0
-            in_string = False
+            in_string = None
             escape = False
             for i in range(start, len(text)):
                 ch = text[i]
@@ -1234,10 +1248,14 @@ class Agent:
                 if ch == '\\':
                     escape = True
                     continue
-                if ch == '"':
-                    in_string = not in_string
+                if in_string:
+                    if ch == in_string:
+                        in_string = None
                     continue
-                if not in_string:
+                else:
+                    if ch == '"' or ch == '`':
+                        in_string = ch
+                        continue
                     if ch == '{':
                         brace_count += 1
                     elif ch == '}':
@@ -1258,21 +1276,22 @@ class Agent:
                 raw_args = data.get("arguments") if "arguments" in data else data.get("parameters")
                 return data["name"], _clean_arguments(raw_args), True
 
-        # 3.5 Fallback: Robust regex extraction for write_file if JSON was malformed or truncated
-        if '"name"' in text or '{"name":' in text or '"write_file"' in text:
+        # 3.5 Fallback: Robust regex extraction if JSON was malformed or truncated (only when is_final=True)
+        if is_final and ('"name"' in text or '{"name":' in text or '"write_file"' in text or '"edit_file"' in text):
             name_m = re.search(r'"name"\s*:\s*"([a-zA-Z0-9_-]+)"', text)
-            tool_name = name_m.group(1) if name_m else ("write_file" if '"write_file"' in text else None)
+            tool_name = name_m.group(1) if name_m else ("write_file" if '"write_file"' in text else ("edit_file" if '"edit_file"' in text else None))
             if tool_name == "write_file":
-                path_m = re.search(r'"path"\s*:\s*"([^"]+)"', text)
-                content_m = re.search(r'"content"\s*:\s*"(.*)', text, flags=re.DOTALL)
+                path_m = re.search(r'"path"\s*:\s*[`"]([^`"]+)[`"]', text)
+                content_m = re.search(r'"content"\s*:\s*[`"]([\s\S]*)', text, flags=re.DOTALL)
                 if not content_m:
-                    content_m = re.search(r'"content"\s*:\s*(.*)', text, flags=re.DOTALL)
+                    content_m = re.search(r'"content"\s*:\s*([\s\S]*)', text, flags=re.DOTALL)
 
                 if path_m and content_m:
                     p_str = path_m.group(1).strip()
                     c_str = content_m.group(1).strip()
-                    c_str = re.sub(r'(?:"\s*\}|\s*\}\s*\}|\s*```)\s*$', '', c_str)
-                    c_str = re.sub(r'"\s*\}\s*\}\s*$', '', c_str)
+                    c_str = re.sub(r'(?:[`"]\s*\}|\s*\}\s*\}|\s*```)\s*$', '', c_str)
+                    c_str = re.sub(r'[`"]\s*\}\s*\}\s*$', '', c_str)
+                    c_str = re.sub(r'[`"]\s*$', '', c_str)
                     try:
                         c_str = c_str.encode("utf-8").decode("unicode_escape")
                     except Exception:
@@ -1290,15 +1309,20 @@ class Agent:
                     if c_str.strip():
                         return "write_file", {"path": p_str, "content": c_str.strip()}, True
             elif tool_name in ("edit_file", "patch_file"):
-                path_m = re.search(r'"path"\s*:\s*"([^"]+)"', text)
-                target_m = re.search(r'"target"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', text)
-                rep_m = re.search(r'"replacement"\s*:\s*"(.*)', text, flags=re.DOTALL)
+                path_m = re.search(r'"path"\s*:\s*[`"]([^`"]+)[`"]', text)
+                target_m = re.search(r'"target"\s*:\s*[`"]([\s\S]*?)[`"](?:\s*,|\s*\n\s*"|\s*\})', text)
+                if not target_m:
+                    target_m = re.search(r'"target"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', text)
+                rep_m = re.search(r'"replacement"\s*:\s*[`"]([\s\S]*)', text, flags=re.DOTALL)
+                if not rep_m:
+                    rep_m = re.search(r'"replacement"\s*:\s*([\s\S]*)', text, flags=re.DOTALL)
                 if path_m and target_m and rep_m:
                     p_str = path_m.group(1).strip()
                     t_str = target_m.group(1).strip()
                     r_str = rep_m.group(1).strip()
-                    r_str = re.sub(r'(?:"\s*\}|\s*\}\s*\}|\s*```)\s*$', '', r_str)
-                    r_str = re.sub(r'"\s*\}\s*\}\s*$', '', r_str)
+                    r_str = re.sub(r'(?:[`"]\s*\}|\s*\}\s*\}|\s*```)\s*$', '', r_str)
+                    r_str = re.sub(r'[`"]\s*\}\s*\}\s*$', '', r_str)
+                    r_str = re.sub(r'[`"]\s*$', '', r_str)
                     try:
                         t_str = t_str.encode("utf-8").decode("unicode_escape")
                         r_str = r_str.encode("utf-8").decode("unicode_escape")
@@ -1521,13 +1545,14 @@ class Agent:
 
                             # Early stop: break immediately as soon as a complete tool call or code block is formed
                             if re.search(r"```[a-zA-Z0-9_-]*\s*\n.+?\n```", accumulated, flags=re.DOTALL):
-                                _, _, valid = self.extract_tool_call(accumulated, user_prompt=user_prompt, step=step)
+                                _, _, valid = self.extract_tool_call(accumulated, user_prompt=user_prompt, step=step, is_final=False)
                                 if valid:
                                     break
                             elif '{"name"' in accumulated or '{"name":' in accumulated:
-                                _, _, valid = self.extract_tool_call(accumulated, user_prompt=user_prompt, step=step)
-                                if valid:
-                                    break
+                                if accumulated.count("}") >= accumulated.count("{") and accumulated.count("{") > 0:
+                                    _, _, valid = self.extract_tool_call(accumulated, user_prompt=user_prompt, step=step, is_final=False)
+                                    if valid:
+                                        break
                         else:
                             preamble_buffer += token
                             if len(preamble_buffer) >= 80:
@@ -1777,7 +1802,7 @@ class Agent:
                     if clean_res and not re.search(r'^\s*(?:```|\{\s*"name")', clean_res):
                         print(f"\n{BOLD}{CYAN}Qwen:{RESET} {clean_res}")
                     else:
-                        print(f"\n{BOLD}{CYAN}Qwen:{RESET} {res.strip()[:400]}")
+                        print(f"\n{BOLD}{CYAN}Qwen:{RESET} {res.strip()[:1500]}")
                 break
 
             print(" " * 30, end="\r")
