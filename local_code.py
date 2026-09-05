@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.5.4"
+__version__ = "1.5.5"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -1734,11 +1734,23 @@ def main():
     print(f"{GRAY}Commands: /help, /models, cd <dir>, or 'exit' to quit.{RESET}")
     print(f"{BOLD}{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}\n")
 
+    # Configure readline shortcut keys to instantly toggle mode from keyboard
+    try:
+        import readline
+        readline.parse_and_bind(r'"\C-t": "/auto\n"')       # Ctrl+T: Toggle Auto/Manual
+        readline.parse_and_bind(r'"\M-a": "/auto\n"')       # Alt+A: Toggle Auto/Manual
+        readline.parse_and_bind(r'"\C-y": "/auto\n"')       # Ctrl+Y: Toggle Auto/Manual
+        readline.parse_and_bind(r'"\e[12~": "/auto\n"')     # F2: Toggle Auto/Manual
+        readline.parse_and_bind(r'"\eOQ": "/auto\n"')       # F2 alternative (VT100)
+    except Exception:
+        pass
+
     while True:
         try:
             cwd_str = os.getcwd()
             short_cwd = cwd_str.replace(home, "~") if cwd_str.startswith(home) else cwd_str
-            prompt_symbol = f"{BOLD}{GREEN}[{short_cwd}] >{RESET} "
+            mode_badge = f"{GREEN}[⚡auto]{RESET}" if agent.auto else f"{YELLOW}[🛡️manual]{RESET}"
+            prompt_symbol = f"{BOLD}{CYAN}[{short_cwd}]{RESET} {mode_badge} {BOLD}>{RESET} "
             user_input = input(prompt_symbol).strip()
             user_input = re.sub(r'(\x1b\[E|\^[E])', '\n', user_input).strip()
         except (KeyboardInterrupt, EOFError):
@@ -1748,8 +1760,21 @@ def main():
         if not user_input:
             continue
 
-        # Built-in cd command to navigate between directories inside lc
         user_lower = user_input.lower()
+
+        # Instant mode toggle / shortcut keys (Ctrl+T, Alt+A, F2, or single key a / m / t)
+        if user_lower in ("/auto", "/perm", "/mode", "auto", "manual", "perm", "/a", "/m", "a", "m", "t", "/t"):
+            if user_lower in ("a", "/a", "auto"):
+                agent.auto = True
+            elif user_lower in ("m", "/m", "manual", "perm", "/perm"):
+                agent.auto = False
+            else:
+                agent.auto = not agent.auto
+            status = f"{GREEN}Auto-Approve ON (⚡ all actions run autonomously){RESET}" if agent.auto else f"{YELLOW}Manual Permission ON (🛡️ prompts before actions){RESET}"
+            print(f"Mode switched: {status}\n")
+            continue
+
+        # Built-in cd command to navigate between directories inside lc
         if user_lower.startswith(("cd ", "/cd ")) or user_lower in ("cd", "/cd"):
             parts = user_input.split(maxsplit=1)
             target = parts[1].strip() if len(parts) > 1 else "~"
@@ -1759,23 +1784,17 @@ def main():
                 cwd_str = os.getcwd()
                 short_cwd = cwd_str.replace(home, "~") if cwd_str.startswith(home) else cwd_str
                 print(f"{GREEN}✓ Changed directory to:{RESET} {BOLD}{short_cwd}{RESET} {GRAY}({cwd_str}){RESET}\n")
-                # Update system prompt with new working directory
                 agent.history[0]["content"] = get_system_prompt()
             else:
                 print(f"{RED}Directory not found: {target}{RESET}\n")
             continue
 
-        if user_input.lower() in ("exit", "quit", ":q"):
+        if user_lower in ("exit", "quit", ":q"):
             print(f"{GRAY}Goodbye!{RESET}")
             break
-        elif user_input.lower() == "/clear":
+        elif user_lower == "/clear":
             agent.history = [{"role": "system", "content": get_system_prompt()}]
             print(f"{YELLOW}Conversation reset.{RESET}\n")
-            continue
-        elif user_input.lower() in ("/auto", "/perm"):
-            agent.auto = not agent.auto
-            status = f"{GREEN}Auto-Approve ON{RESET}" if agent.auto else f"{YELLOW}Permission Mode ON{RESET}"
-            print(f"Mode switched: {status}\n")
             continue
         elif user_input.lower() == "/diff":
             st = subprocess.run("git diff", shell=True, text=True, capture_output=True)
@@ -1862,18 +1881,19 @@ def main():
             continue
         elif user_input.lower() == "/help":
             print(f"""
-{BOLD}Interactive Slash Commands:{RESET}
-  {CYAN}cd <dir>{RESET}       Change current working directory (e.g. `cd ~/Downloads`)
-  {CYAN}/open [file]{RESET}   Instantly open HTML app or URL in desktop browser
-  {CYAN}/fix <file>{RESET}    Run automated static diagnostics & autonomously fix file
-  {CYAN}/ui <file>{RESET}     Capture headless screenshot, audit aesthetics & upgrade UI
-  {CYAN}/models{RESET}        Interactive arrow-key menu to switch Ollama models
-  {CYAN}/auto{RESET}          Toggle between Permission Mode and Auto-Approve Mode
-  {CYAN}/diff{RESET}          Show current uncommitted git diff
-  {CYAN}/undo{RESET}          Discard recent uncommitted changes (`git checkout .`)
-  {CYAN}/search <q>{RESET}   Run an instant web search from terminal
-  {CYAN}/clear{RESET}         Reset conversation history
-  {CYAN}exit / quit{RESET}    Exit session
+{BOLD}Interactive Slash Commands & Shortcut Keys:{RESET}
+  {CYAN}Alt+A / Ctrl+T / F2{RESET}  Toggle between Auto and Manual mode instantly
+  {CYAN}a / m (or /auto){RESET}     Switch mode: `a` for Auto, `m` for Manual
+  {CYAN}cd <dir>{RESET}            Change current working directory (e.g. `cd ~/Downloads`)
+  {CYAN}/open [file]{RESET}        Instantly open HTML app or URL in desktop browser
+  {CYAN}/fix <file>{RESET}         Run automated static diagnostics & autonomously fix file
+  {CYAN}/ui <file>{RESET}          Capture headless screenshot, audit aesthetics & upgrade UI
+  {CYAN}/models{RESET}             Interactive arrow-key menu to switch Ollama models
+  {CYAN}/diff{RESET}               Show current uncommitted git diff
+  {CYAN}/undo{RESET}               Discard recent uncommitted changes (`git checkout .`)
+  {CYAN}/search <q>{RESET}        Run an instant web search from terminal
+  {CYAN}/clear{RESET}              Reset conversation history
+  {CYAN}exit / quit{RESET}         Exit session
 """)
             continue
 
