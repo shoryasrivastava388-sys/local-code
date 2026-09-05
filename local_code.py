@@ -32,7 +32,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.8.3"
+__version__ = "1.8.4"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -61,9 +61,12 @@ def get_safe_default_context(model_name=""):
     """Calculate safe context tokens to prevent kernel OOM kills on memory-constrained systems."""
     ram = get_system_ram_gb()
     m_lower = (model_name or "").lower()
-    # On systems with <14GB RAM, 9B models require 2048 context to prevent kernel OOM kills
-    if any(k in m_lower for k in ("9b", "14b", "32b", "70b")):
-        return 2048 if ram < 14.0 else 4096
+    # 32B/70B models need >=16GB RAM for 4096 context.
+    # 9B/14B models run stably with 4096 context on systems with >=10GB RAM.
+    if any(k in m_lower for k in ("32b", "70b")):
+        return 2048 if ram < 16.0 else 4096
+    if any(k in m_lower for k in ("9b", "14b")):
+        return 2048 if ram < 10.0 else 4096
     if ram < 8.0:
         return 2048
     return 4096
@@ -749,9 +752,9 @@ class Agent:
         self.host = host.rstrip("/")
         if context is None:
             context = get_safe_default_context(model)
-        # Enforce memory safety on systems with <14GB RAM to prevent kernel OOM kills
+        # Enforce memory safety on systems with <10GB RAM to prevent kernel OOM kills
         safe_ctx = get_safe_default_context(model)
-        if context > safe_ctx and get_system_ram_gb() < 14.0:
+        if context > safe_ctx and get_system_ram_gb() < 10.0:
             context = safe_ctx
         self.context = context
         self.temp = temp
@@ -1407,6 +1410,37 @@ class Agent:
             pass
         return None
 
+    @staticmethod
+    def is_json_root_closed(text):
+        """Returns True only when the root JSON object is truly closed (ignoring braces inside strings)."""
+        idx = text.find('{')
+        if idx == -1:
+            return False
+        depth = 0
+        in_str = False
+        escape = False
+        for ch in text[idx:]:
+            if escape:
+                escape = False
+                continue
+            if ch == '\\':
+                escape = True
+                continue
+            if in_str:
+                if ch == '"':
+                    in_str = False
+                continue
+            else:
+                if ch == '"':
+                    in_str = True
+                    continue
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        return True
+        return False
 
     def extract_tool_call(self, text, user_prompt="", step=1, is_final=True):
         """Extract tool call using markdown blocks, balanced-brace parsing, and raw JSON fallback.
@@ -1773,7 +1807,7 @@ class Agent:
                                 if valid:
                                     break
                             elif '{"name"' in accumulated or '{"name":' in accumulated:
-                                if accumulated.count("}") >= accumulated.count("{") and accumulated.count("{") > 0:
+                                if Agent.is_json_root_closed(accumulated):
                                     _, _, valid = self.extract_tool_call(accumulated, user_prompt=user_prompt, step=step, is_final=False)
                                     if valid:
                                         break
@@ -2369,7 +2403,7 @@ def main():
             if chosen_model:
                 agent.model = chosen_model
                 safe_ctx = get_safe_default_context(chosen_model)
-                if agent.context > safe_ctx and get_system_ram_gb() < 14.0:
+                if agent.context > safe_ctx and get_system_ram_gb() < 10.0:
                     agent.context = safe_ctx
                 print(f"{GREEN}Active model updated to:{RESET} {BOLD}{agent.model}{RESET} {GRAY}(Context: {agent.context}){RESET}\n")
             continue
