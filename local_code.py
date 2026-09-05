@@ -30,7 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.8.0"
+__version__ = "1.8.1"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -1451,6 +1451,10 @@ class Agent:
         # 4. Agentic Fallback: Model produced a raw code block instead of JSON!
         # Automatically convert it into a write_file action so code is saved to disk immediately.
         code_blocks = re.findall(r"```([a-zA-Z0-9_-]+)?\s*\n(.*?)```", text, flags=re.DOTALL)
+        if is_final and not code_blocks:
+            unclosed = re.search(r"```([a-zA-Z0-9_-]+)?\s*\n([\s\S]+)$", text)
+            if unclosed:
+                code_blocks = [(unclosed.group(1), unclosed.group(2))]
         for lang, code in code_blocks:
                 code = code.strip()
                 if code.count("\n") >= 2 and not (code.startswith("{") and code.endswith("}")):
