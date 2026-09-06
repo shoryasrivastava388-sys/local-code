@@ -32,7 +32,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-__version__ = "1.8.4"
+__version__ = "1.8.6"
 
 # Operating System Detection
 OS_NAME = platform.system()
@@ -1210,8 +1210,31 @@ class Agent:
             except ValueError:
                 pass
             print(f"\n{GREEN}💾 {label}:{RESET} {BOLD}{display_path}{RESET} {GRAY}({len(content)} bytes){RESET}")
-            # Guard against accidentally wiping an existing file with a snippet:
+            # Guard against accidentally wiping an existing file during a fix/edit task:
             if not is_new and p.is_file():
+                # Always create an automatic safety backup in ~/.lc_backups/
+                try:
+                    import shutil
+                    backup_dir = Path.home() / ".lc_backups"
+                    backup_dir.mkdir(exist_ok=True)
+                    backup_file = backup_dir / f"{p.name}_{int(time.time())}.bak"
+                    shutil.copy2(p, backup_file)
+                except Exception:
+                    pass
+
+                old_text = p.read_text(encoding="utf-8", errors="replace")
+                old_lines = len(old_text.splitlines())
+
+                # Prevent overwriting/deleting existing full files when user asked to fix or modify code
+                is_fix_prompt = any(w in user_prompt.lower() for w in ("fix", "repair", "debug", "solve", "issue", "bug", "patch", "modify", "update", "change", "add"))
+                is_explicit_rewrite = any(w in user_prompt.lower() for w in ("rewrite", "recreate", "from scratch", "overwrite"))
+                if is_fix_prompt and not is_explicit_rewrite and old_lines >= 15:
+                    return (
+                        f"Action rejected: '{display_path}' already exists with {old_lines} lines of working code. "
+                        f"Overwriting or deleting the entire file during a bug fix is strictly prohibited. "
+                        f"You MUST invoke 'read_file' to locate the target section, then invoke 'edit_file' with exact 'target' and 'replacement' to modify only the needed lines."
+                    )
+
                 p_suffix = p.suffix.lower()
                 if p_suffix in (".html", ".htm") and not ("<html" in content.lower() or "<!doctype" in content.lower()):
                     return (
@@ -2042,7 +2065,7 @@ class Agent:
                     diag_msg = "\n".join(f"- {iss}" for iss in issues)
                     user_prompt += (
                         f"\n\n[Automated Static Diagnostics on {cand.name}]:\n{diag_msg}\n"
-                        f"Instructions: You MUST invoke 'edit_file' (or 'write_file') now to resolve these diagnostic issues in {cand.name}. Do NOT call 'read_file' repeatedly. Apply the code fix directly to disk."
+                        f"Instructions: Target file '{cand.name}' already exists. You MUST invoke 'edit_file' now with exact 'target' and 'replacement' to surgically resolve these diagnostic issues. Do NOT overwrite the file with 'write_file'."
                     )
                     print(f"\n{YELLOW}🔍 Diagnostics found {len(issues)} issue(s) in {cand.name}:{RESET}")
                     for iss in issues:
@@ -2052,7 +2075,7 @@ class Agent:
                     is_edit_or_fix = bool(re.search(r"\b(?:fix|repair|debug|solve|unbug|bug|broken|issue|inspect|search|edit|modify|update|upgrade|refactor|change|make|improve|pull\s+out|give\s+me)\b", user_prompt, re.IGNORECASE))
                     is_launch_only = bool(re.search(r"^\s*(?:open|launch|view|play|test)\b|\b(?:open|launch)\s+in\s+browser\b", user_prompt, re.IGNORECASE)) and not (is_edit_or_fix or is_create_intent)
 
-                    if cand.suffix.lower() in (".html", ".htm") and (is_launch_only or (has_fix_word and not issues)):
+                    if cand.suffix.lower() in (".html", ".htm") and is_launch_only:
                         print(f"\n{GREEN}✓ Pre-flight diagnostic check: '{cand.name}' has 0 errors.{RESET}")
                         self.execute_tool("open_browser", {"url": cand.name}, user_prompt=user_prompt)
                         self.history.append({"role": "user", "content": user_prompt})
@@ -2060,8 +2083,8 @@ class Agent:
                         return
                     elif has_fix_word or is_edit_or_fix:
                         user_prompt += (
-                            f"\n\n[Target File: {cand.name} - 0 Diagnostic Errors Detected]\n"
-                            f"The file '{cand.name}' is valid with 0 diagnostic issues. If making enhancements or inspecting code, use 'read_file' or 'edit_file'. Do NOT rewrite complete working files."
+                            f"\n\n[Target File: {cand.name} - Existing File on Disk]\n"
+                            f"The file '{cand.name}' already exists with complete structure. You MUST use 'read_file' to locate the relevant function and 'edit_file' with exact 'target' and 'replacement' to apply your fix. Overwriting the entire file with 'write_file' is prohibited."
                         )
             except Exception:
                 pass
